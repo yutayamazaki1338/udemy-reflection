@@ -38,6 +38,24 @@ class CurriculumTests(unittest.TestCase):
         self.assertNotIn('sections', curriculum)
         self.assertNotIn('duration_seconds', str(curriculum))
 
+    def test_parse_hashed_class_names_and_curriculum_stats(self):
+        markup = '''
+        <html><head><title>Sample course | Udemy</title></head><body>
+        <div data-purpose="course-curriculum">
+          <div data-testid="curriculum-stats">10 sections • 100 lectures • 5h total length</div>
+          <div class="curriculum-section-module__a1__panel">
+            <span class="curriculum-section-module__a1__section-title">Section title</span>
+            <span class="curriculum-section-module__a1__course-lecture-title">Video title</span>
+          </div>
+        </div></body></html>
+        '''
+        markup = markup.replace('10 sections • 100 lectures', '1 section • 1 lecture')
+        curriculum = app.parse_course_curriculum(markup)
+        self.assertEqual(curriculum['expected_sections'], 1)
+        self.assertEqual(curriculum['expected_lectures'], 1)
+        self.assertEqual(curriculum['course_name'], 'Sample course')
+        self.assertEqual(curriculum['lectures'], [{'title': 'Video title', 'position': 1}])
+
     def test_stop_if_public_counts_do_not_match_parsed_curriculum(self):
         mismatch = self.fixture.replace('2 sections • 3 lectures', '2 sections • 4 lectures')
         with self.assertRaisesRegex(CurriculumParseError, '公開件数と取得件数が一致しない'):

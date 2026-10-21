@@ -188,7 +188,10 @@ class CurriculumHTMLParser(HTMLParser):
 
 
 def _has_class(node, class_name):
-    return class_name in node.attrs.get('class', '').split()
+    return any(
+        value == class_name or value.endswith(class_name)
+        for value in node.attrs.get('class', '').split()
+    )
 
 
 def _public_count(text, kind):
@@ -196,7 +199,7 @@ def _public_count(text, kind):
         'sections': r'(?:num_sections|section_count|sections_count|numSections|sectionCount)',
         'lectures': r'(?:num_lectures|lecture_count|lectures_count|numLectures|lectureCount)',
     }[kind]
-    values = {int(match) for match in re.findall(r'\b(\d+)\s+' + kind[:-1] + r's?\b', text, re.IGNORECASE)}
+    values = {int(match) for match in re.findall(r'(?<!\d)(\d+)\s+' + kind[:-1] + r's?\b', text, re.IGNORECASE)}
     values.update(int(match) for match in re.findall(r'["\']' + names + r'["\']\s*:\s*["\']?(\d+)', text))
     return values
 
@@ -217,8 +220,14 @@ def parse_course_curriculum(markup):
     elements = list(curriculum.descendants())
     section_nodes = [node for node in elements if _has_class(node, '__section-title')]
     lecture_nodes = [node for node in elements if _has_class(node, '__course-lecture-title')]
-    section_counts = _public_count(page_text, 'sections')
-    lecture_counts = _public_count(page_text, 'lectures')
+    stats_nodes = [
+        node for node in elements
+        if node.attrs.get('data-testid') == 'curriculum-stats'
+        or node.attrs.get('data-purpose') == 'curriculum-stats'
+    ]
+    counts_text = ' '.join(node.text() for node in stats_nodes) if stats_nodes else page_text
+    section_counts = _public_count(counts_text, 'sections')
+    lecture_counts = _public_count(counts_text, 'lectures')
     if len(section_counts) != 1 or len(lecture_counts) != 1:
         raise CurriculumParseError('公開されているセクション数・レクチャー数を特定できないため、登録を停止しました。')
     expected_sections = next(iter(section_counts))

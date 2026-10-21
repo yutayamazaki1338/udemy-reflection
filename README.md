@@ -54,6 +54,31 @@ python3 app.py --port 8766
 
 講座URLは前後の空白を除き、クエリとフラグメントを取り除いた正規URLとして保存・取得します。ページ内の公開HTML構造に依存するため、取得可否や内容はUdemy側の変更、公開状態、地域や実行環境などで変わり、結果の正確性・継続性は保証されません。検証報告では `learn-basics-of-linux` の公開HTMLから10セクション・100レクチャーが取得され件数照合できましたが、他の講座や環境での動作を保証するものではありません。取得に失敗した場合は画面にエラーと手動入力の案内を表示します。JSON/CSV保存または単元の手動登録を利用してください。日次振り返りの学習時間は実際にかかった学習時間を記録するもので、Udemy動画時間とは別です。
 
+取得・解析を分けて確認する場合は、アプリのフォルダーで次を実行します。公開HTML本体を `/tmp/metawatch-udemy-course.html` に保存し、続けて保存済みHTMLの解析件数を表示します。
+
+```sh
+python3 - <<'PY'
+from pathlib import Path
+import app
+
+url = 'https://www.udemy.com/course/learn-basics-of-linux/'
+markup = app.fetch_udemy_course_html(url)
+html_path = Path('/tmp/metawatch-udemy-course.html')
+html_path.write_text(markup, encoding='utf-8')
+print('取得文字数:', len(markup), '保存先:', html_path)
+saved_html = html_path.read_text(encoding='utf-8')
+try:
+    result = app.parse_course_curriculum(saved_html)
+    print('講座名:', result['course_name'])
+    print('公開レクチャー数:', result['expected_lectures'])
+    print('取得タイトル数:', len(result['lectures']))
+except app.CurriculumParseError as error:
+    print('解析エラー:', error)
+PY
+```
+
+HTMLは公開講座ページの全体を取得しますが、登録対象として解析するのはカリキュラムの公開件数と動画タイトルです。取得HTMLにはページ全体の公開情報が含まれるため、共有・コミットせずローカルで確認してください。
+
 ## データとバックアップ
 
 データはこのフォルダの `data/reflection.sqlite3` に保存されます。終了しても残ります。サーバー停止後に `data` フォルダ全体をコピーするとバックアップできます。復元は停止状態でバックアップの同ファイルに置き換えます。コードを移動する場合は `data` も一緒に移動してください。
