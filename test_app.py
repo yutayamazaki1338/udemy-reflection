@@ -21,16 +21,22 @@ class CurriculumTests(unittest.TestCase):
     def setUpClass(cls):
         cls.fixture = FIXTURE_PATH.read_text(encoding='utf-8')
 
-    def test_parse_saved_public_curriculum_fixture_and_durations(self):
+    def test_parse_saved_public_curriculum_fixture_returns_video_titles_only(self):
         curriculum = app.parse_course_curriculum(self.fixture)
         self.assertEqual(curriculum['expected_sections'], 2)
         self.assertEqual(curriculum['expected_lectures'], 3)
         self.assertIs(curriculum['complete'], True)
-        self.assertEqual([section['title'] for section in curriculum['sections']], ['Getting started', 'Working with files'])
-        lectures = [lecture for section in curriculum['sections'] for lecture in section['lectures']]
-        self.assertEqual([lecture['title'] for lecture in lectures], ['Introduction', 'Install the tools', 'Read a file'])
-        self.assertEqual([lecture['position'] for lecture in lectures], [1, 2, 3])
-        self.assertEqual([lecture['duration_seconds'] for lecture in lectures], [300, 720, 3720])
+        self.assertEqual(curriculum['course_name'], 'Linux Basics')
+        self.assertEqual(
+            curriculum['lectures'],
+            [
+                {'title': 'Introduction', 'position': 1},
+                {'title': 'Install the tools', 'position': 2},
+                {'title': 'Read a file', 'position': 3},
+            ],
+        )
+        self.assertNotIn('sections', curriculum)
+        self.assertNotIn('duration_seconds', str(curriculum))
 
     def test_stop_if_public_counts_do_not_match_parsed_curriculum(self):
         mismatch = self.fixture.replace('2 sections • 3 lectures', '2 sections • 4 lectures')
@@ -44,21 +50,31 @@ class CurriculumTests(unittest.TestCase):
         with self.assertRaisesRegex(CurriculumParseError, '公開されているセクション数'):
             app.parse_course_curriculum(no_counts)
 
-    def test_url_validation_allows_only_canonical_udemy_course_urls(self):
+    def test_url_validation_trims_and_strips_query_and_fragment(self):
         self.assertEqual(
-            app.normalize_udemy_course_url('https://www.udemy.com/course/learn-basics-of-linux'),
+            app.normalize_udemy_course_url(' https://www.udemy.com/course/learn-basics-of-linux/?couponCode=OF260508JPB#reviews '),
             'https://www.udemy.com/course/learn-basics-of-linux/',
         )
+        self.assertEqual(
+            app.normalize_udemy_course_url('https://www.udemy.com:443/course/example/?a=b#top'),
+            'https://www.udemy.com/course/example/',
+        )
+        self.assertEqual(
+            app.normalize_udemy_course_url('https://udemy.com/course/example/?a=b'),
+            'https://www.udemy.com/course/example/',
+        )
+
+    def test_url_validation_rejects_malicious_and_noncanonical_urls(self):
         for url in (
             'http://www.udemy.com/course/example/',
             'https://www.udemy.com.attacker.test/course/example/',
             'https://attacker.test/course/example/',
             'https://user@www.udemy.com/course/example/',
+            'https://user:password@www.udemy.com/course/example/',
             'https://www.udemy.com:8443/course/example/',
-            'https://www.udemy.com/course/example/?redirect=localhost',
-            'https://www.udemy.com/course/example/#fragment',
             'https://www.udemy.com/course/%2f..%2fadmin/',
             'https://127.0.0.1/course/example/',
+            'https://www.udemy.com/course/example/\n?x=1',
         ):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 app.normalize_udemy_course_url(url)
@@ -290,10 +306,10 @@ class ApiFeatureTests(unittest.TestCase):
                 self.assertEqual(response.status, 200)
                 self.assertIn(filename, response.headers['Content-Disposition'])
 
-    def test_curriculum_preview_requires_explicit_import_and_preserves_existing_progress(self):
+    def test_url_curriculum_preview_registers_one_course_and_preserves_existing_data(self):
         status, result = self.request_json('/api/courses', {
             'name': 'Linux講座',
-            'course_url': 'https://www.udemy.com/course/learn-basics-of-linux/',
+            'course_url': 'https://www.udemy.com/course/learn-basics-of-linux/?couponCode=promo#overview',
         })
         self.assertEqual(status, 200)
         state = self.request_json('/api/state')[1]
@@ -306,48 +322,51 @@ class ApiFeatureTests(unittest.TestCase):
         })[0], 200)
         self.assertEqual(self.request_json('/api/watched', {'id': 1, 'watched': True})[0], 200)
         fixture = FIXTURE_PATH.read_text(encoding='utf-8')
-        with patch.object(app, 'fetch_udemy_course_html', return_value=fixture):
-            status, preview = self.request_json('/api/course-curriculum/preview', {'course_id': 1})
+        with patch.object(app, 'fetch_udemy_course_html', return_value=fixture) as fetch:
+            status, preview = self.request_json('/api/course-curriculum/preview', {
+                'url': ' https://www.udemy.com/course/learn-basics-of-linux/?couponCode=promo#overview ',
+            })
+        fetch.assert_called_once_with('https://www.udemy.com/course/learn-basics-of-linux/')
         self.assertEqual(status, 200)
         self.assertEqual(preview['expected_lectures'], 3)
+        self.assertEqual(preview['course_name'], 'Linux Basics')
+        self.assertEqual(preview['lectures'], [
+            {'title': 'Introduction', 'position': 1},
+            {'title': 'Install the tools', 'position': 2},
+            {'title': 'Read a file', 'position': 3},
+        ])
         self.assertEqual(len(self.request_json('/api/state')[1]['lectures']), 1)
         status, added = self.request_json('/api/course-curriculum/register', {'token': preview['token']})
         self.assertEqual(status, 200)
-        self.assertEqual(added['sections_added'], 2)
+        self.assertFalse(added['course_created'])
+        self.assertEqual(added['course_id'], 1)
         self.assertEqual(added['lectures_added'], 3)
         state = self.request_json('/api/state')[1]
+        self.assertEqual(len(state['courses']), 1)
         self.assertEqual(len(state['lectures']), 4)
-        self.assertEqual(len(state['course_sections']), 3)
-        self.assertEqual([section['position'] for section in state['course_sections']], [1, 2, 3])
+        self.assertEqual(len(state['course_sections']), 1)
         self.assertEqual(state['lectures'][0]['watched'], 1)
         self.assertEqual(state['lectures'][0]['duration_seconds'], 1020)
         imported = state['lectures'][1:]
+        self.assertEqual([lecture['title'] for lecture in imported], ['Introduction', 'Install the tools', 'Read a file'])
         self.assertEqual([lecture['position'] for lecture in imported], [2, 3, 4])
-        self.assertEqual([lecture['duration_seconds'] for lecture in imported], [300, 720, 3720])
-        section_titles = {section['id']: section['title'] for section in state['course_sections']}
-        self.assertEqual(
-            [section_titles[lecture['section_id']] for lecture in imported],
-            ['Getting started', 'Getting started', 'Working with files'],
-        )
+        self.assertTrue(all(lecture['section_id'] is None and lecture['duration_seconds'] is None for lecture in imported))
         self.assertEqual(self.request_json('/api/course-curriculum/register', {'token': preview['token']})[0], 400)
 
     def test_invalid_and_incomplete_previews_never_create_lectures(self):
-        self.assertEqual(self.request_json('/api/courses', {
-            'name': 'Udemy講座',
-            'course_url': 'https://www.udemy.com/course/example/',
-        })[0], 200)
         mismatch = FIXTURE_PATH.read_text(encoding='utf-8').replace('2 sections • 3 lectures', '2 sections • 4 lectures')
         with patch.object(app, 'fetch_udemy_course_html', return_value=mismatch):
-            status, error = self.request_json('/api/course-curriculum/preview', {'course_id': 1})
+            status, error = self.request_json('/api/course-curriculum/preview', {'url': 'https://www.udemy.com/course/example/'})
         self.assertEqual(status, 422)
         self.assertIn('件数が一致しない', error['error'])
         self.assertEqual(self.request_json('/api/state')[1]['lectures'], [])
+        self.assertEqual(self.request_json('/api/state')[1]['courses'], [])
 
         token = 'incomplete-preview'
         with app.connect() as connection:
             connection.execute(
-                'INSERT INTO curriculum_previews(token,course_id,items_json,created_at) VALUES (?,?,?,?)',
-                (token, 1, json.dumps({'complete': False, 'sections': []}), int(app.time.time())),
+                'INSERT INTO curriculum_url_previews(token,course_url,course_name,items_json,created_at) VALUES (?,?,?,?,?)',
+                (token, 'https://www.udemy.com/course/example/', 'Example', json.dumps({'complete': False, 'lectures': []}), int(app.time.time())),
             )
         status, error = self.request_json('/api/course-curriculum/register', {'token': token})
         self.assertEqual(status, 400)
@@ -359,16 +378,71 @@ class ApiFeatureTests(unittest.TestCase):
             'name': '不正URL講座',
             'course_url': 'https://example.com/course/not-udemy/',
         })[0], 400)
-        self.assertEqual(self.request_json('/api/courses', {'name': '通常講座'})[0], 200)
-        status, result = self.request_json('/api/courses', {
-            'name': 'Udemy講座',
-            'course_url': 'https://www.udemy.com/course/example/',
-        })
-        self.assertEqual(status, 200)
+        with patch.object(app, 'fetch_udemy_course_html') as fetch:
+            status, error = self.request_json('/api/course-curriculum/preview', {'url': 'https://example.com/course/not-udemy/'})
+        self.assertEqual(status, 400)
+        self.assertIn('Udemy講座URL', error['error'])
+        fetch.assert_not_called()
         with patch.object(app, 'fetch_udemy_course_html', side_effect=CurriculumFetchError('Udemyへの接続に失敗しました')):
-            status, error = self.request_json('/api/course-curriculum/preview', {'course_id': result.get('id', 2)})
+            status, error = self.request_json('/api/course-curriculum/preview', {'url': 'https://www.udemy.com/course/example/'})
         self.assertEqual(status, 502)
         self.assertIn('手動入力', error['error'])
+        self.assertEqual(self.request_json('/api/courses', {'name': '通常講座'})[0], 200)
+        self.assertEqual(self.request_json('/api/lectures', {'course_id': 1, 'title': '手入力単元'})[0], 200)
+        state = self.request_json('/api/state')[1]
+        self.assertEqual([course['name'] for course in state['courses']], ['通常講座'])
+        self.assertEqual([lecture['title'] for lecture in state['lectures']], ['手入力単元'])
+
+    def test_url_import_creates_course_only_after_confirmation_and_reuses_url(self):
+        fixture = FIXTURE_PATH.read_text(encoding='utf-8')
+        with patch.object(app, 'fetch_udemy_course_html', return_value=fixture):
+            status, preview = self.request_json('/api/course-curriculum/preview', {'url': 'https://www.udemy.com/course/example/'})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.request_json('/api/state')[1]['courses'], [])
+        status, result = self.request_json('/api/course-curriculum/register', {'token': preview['token']})
+        self.assertEqual(status, 200)
+        self.assertTrue(result['course_created'])
+        state = self.request_json('/api/state')[1]
+        self.assertEqual(len(state['courses']), 1)
+        self.assertEqual(state['courses'][0]['name'], 'Linux Basics')
+        self.assertEqual(state['courses'][0]['course_url'], 'https://www.udemy.com/course/example/')
+        self.assertEqual(len(state['lectures']), 3)
+
+        with patch.object(app, 'fetch_udemy_course_html', return_value=fixture):
+            _, repeat_preview = self.request_json('/api/course-curriculum/preview', {'url': 'https://udemy.com/course/example/?couponCode=second'})
+        _, repeat_result = self.request_json('/api/course-curriculum/register', {'token': repeat_preview['token']})
+        self.assertFalse(repeat_result['course_created'])
+        self.assertEqual(repeat_result['course_id'], result['course_id'])
+        self.assertEqual(repeat_result['lectures_added'], 0)
+        self.assertEqual(len(self.request_json('/api/state')[1]['courses']), 1)
+        self.assertEqual(len(self.request_json('/api/state')[1]['lectures']), 3)
+
+    def test_preview_uses_course_slug_when_page_title_is_missing(self):
+        fixture = FIXTURE_PATH.read_text(encoding='utf-8').replace(
+            '<head><meta property="og:title" content="Linux Basics | Udemy"></head>',
+            '',
+        )
+        with patch.object(app, 'fetch_udemy_course_html', return_value=fixture):
+            status, preview = self.request_json('/api/course-curriculum/preview', {'url': 'https://www.udemy.com/course/my-linux-course/'})
+        self.assertEqual(status, 200)
+        self.assertEqual(preview['course_name'], 'My Linux Course')
+
+    def test_curriculum_ui_separates_url_preview_from_manual_course_creation(self):
+        with urlopen(self.base_url + '/learning') as response:
+            page = response.read().decode('utf-8')
+        manual_form = page.split('<form id="course-form">', 1)[1].split('</form>', 1)[0]
+        self.assertIn('name="name"', manual_form)
+        self.assertNotIn('course_url', manual_form)
+        self.assertIn('id="curriculum-url"', page)
+        self.assertIn('id="fetch-curriculum"', page)
+        with urlopen(self.base_url + '/app.js') as response:
+            script = response.read().decode('utf-8')
+        self.assertIn('\nfunction renderCurriculumImport() {', script)
+        self.assertNotIn('\n  function renderCurriculumImport() {', script)
+        self.assertIn('fetchButton.disabled = !input.value.trim() || curriculumLoading;', script)
+        self.assertIn("$('#fetch-curriculum').onclick = fetchCurriculumPreview;", script)
+        self.assertIn("api('/api/course-curriculum/preview', {url: input.value})", script)
+        self.assertIn("api('/api/course-curriculum/register', {token: curriculumPreview.token})", script)
 
 
 if __name__ == '__main__':

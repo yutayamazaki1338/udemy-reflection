@@ -90,11 +90,9 @@ function renderLearning() {
    catch (e) { check.checked = !check.checked; message(e.message, true); }
   };
   label.append(check);
-  const section = state.course_sections.find(s => s.id === l.section_id);
-  const title = section ? `${section.title} / ${l.title}` : l.title;
-  const b = el('button', title, l.id === lectureId ? 'selected' : 'lecture-title');
+  const b = el('button', l.title, l.id === lectureId ? 'selected' : 'lecture-title');
   b.onclick = () => { lectureId = l.id; render(); };
-  const metadata = [l.duration_seconds ? `${Math.floor(l.duration_seconds / 60)}分` : '', latest(l.id) ? `理解 ${latest(l.id).understanding}/5` : '未記録'].filter(Boolean).join(' · ');
+  const metadata = latest(l.id) ? `理解 ${latest(l.id).understanding}/5` : '未記録';
   row.append(label, b, el('span', metadata, 'badge'));
   list.append(row);
  });
@@ -111,72 +109,6 @@ function renderLearning() {
    const oldest = refs[refs.length - 1];
    history.append(el('p', `理解度の変化 ${oldest.understanding} → ${refs[0].understanding} / 5（${refs.length}回の記録）`));
   }
-  function renderCurriculumImport() {
-   const course = state.courses.find(c => c.id === courseId);
-   const display = $('#course-url-display');
-   const fetchButton = $('#fetch-curriculum');
-   display.replaceChildren();
-   if (course && course.course_url) {
-    display.append(el('span', '登録URL: '));
-    const link = el('a', course.course_url);
-    link.href = course.course_url;
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    display.append(link);
-   } else {
-    display.textContent = course ? 'この講座にUdemy URLは登録されていません。講座登録時のURL入力、または単元の手動入力をご利用ください。' : '講座を選択してください。';
-   }
-   fetchButton.disabled = !course || !course.course_url || curriculumLoading;
-   const preview = $('#curriculum-preview');
-   preview.replaceChildren();
-   if (!curriculumPreview || curriculumPreview.course_id !== courseId) return;
-   const summary = el('p', `公開件数の照合済み: ${curriculumPreview.expected_sections} セクション / ${curriculumPreview.expected_lectures} レクチャー`, 'curriculum-count');
-   preview.append(summary);
-   curriculumPreview.sections.forEach(section => {
-    const group = el('section', undefined, 'curriculum-section');
-    group.append(el('h3', `${section.position}. ${section.title}`));
-    const list = el('ol');
-    section.lectures.forEach(lecture => {
-     const duration = lecture.duration_seconds ? ` · ${Math.floor(lecture.duration_seconds / 60)}分${lecture.duration_seconds % 60 ? ` ${lecture.duration_seconds % 60}秒` : ''}` : ' · 時間情報なし';
-     list.append(el('li', `${lecture.title}${duration}`));
-    });
-    group.append(list);
-    preview.append(group);
-   });
-   const register = el('button', 'プレビューの内容を単元として一括登録');
-   register.type = 'button';
-   register.onclick = async () => {
-    register.disabled = true;
-    try {
-     const result = await api('/api/course-curriculum/register', {token: curriculumPreview.token});
-     curriculumPreview = null;
-     await refresh();
-     message(`${result.sections_added}セクション、${result.lectures_added}レクチャーを追加しました。既存の進捗は変更していません。`);
-    } catch (error) {
-     register.disabled = false;
-     message(error.message, true);
-    }
-   };
-   preview.append(register);
-  }
-  async function fetchCurriculumPreview() {
-   const button = $('#fetch-curriculum');
-   curriculumLoading = true;
-   button.disabled = true;
-   curriculumPreview = null;
-   renderCurriculumImport();
-   try {
-    curriculumPreview = await api('/api/course-curriculum/preview', {course_id: courseId});
-    renderCurriculumImport();
-    message('公開カリキュラムを取得し、公開件数との照合が完了しました。内容を確認してから一括登録できます。');
-   } catch (error) {
-    renderCurriculumImport();
-    message(error.message, true);
-   } finally {
-    curriculumLoading = false;
-    renderCurriculumImport();
-   }
-  }
   refs.forEach(r => {
    const box = el('article', undefined, 'entry');
    box.append(el('h4', new Date(r.recorded_at).toLocaleString('ja-JP')), el('p', `理解度 ${r.understanding}/5 · 満足度 ${r.satisfaction}/5`));
@@ -186,6 +118,57 @@ function renderLearning() {
    history.append(box);
   });
   if (!refs.length) history.append(el('p', '最初の気づきを残しましょう。', 'muted'));
+ }
+}
+function renderCurriculumImport() {
+ const input = $('#curriculum-url');
+ const fetchButton = $('#fetch-curriculum');
+ const preview = $('#curriculum-preview');
+ if (!input || !fetchButton || !preview) return;
+ input.disabled = curriculumLoading;
+ fetchButton.disabled = !input.value.trim() || curriculumLoading;
+ preview.replaceChildren();
+ if (!curriculumPreview) return;
+ input.value = curriculumPreview.course_url;
+ preview.append(el('h3', curriculumPreview.course_name));
+ preview.append(el('p', `公開件数の照合済み: ${curriculumPreview.expected_lectures} レクチャー`, 'curriculum-count'));
+ const list = el('ol');
+ curriculumPreview.lectures.forEach(lecture => list.append(el('li', lecture.title)));
+ preview.append(list);
+ const register = el('button', 'この講座と単元を登録');
+ register.type = 'button';
+ register.onclick = async () => {
+  register.disabled = true;
+  try {
+   const result = await api('/api/course-curriculum/register', {token: curriculumPreview.token});
+   curriculumPreview = null;
+   courseId = result.course_id;
+   lectureId = null;
+   await refresh();
+   message(`${result.course_created ? '講座を登録し' : '既存講座に追加し'}、${result.lectures_added}件の単元を追加しました。既存の単元と進捗は変更していません。`);
+  } catch (error) {
+   register.disabled = false;
+   message(error.message, true);
+  }
+ };
+ preview.append(register);
+}
+async function fetchCurriculumPreview() {
+ const input = $('#curriculum-url');
+ curriculumLoading = true;
+ curriculumPreview = null;
+ renderCurriculumImport();
+ try {
+  curriculumPreview = await api('/api/course-curriculum/preview', {url: input.value});
+  input.value = curriculumPreview.course_url;
+  renderCurriculumImport();
+  message('公開カリキュラムを取得し、件数を照合しました。内容を確認してから登録できます。');
+ } catch (error) {
+  renderCurriculumImport();
+  message(error.message, true);
+ } finally {
+  curriculumLoading = false;
+  renderCurriculumImport();
  }
 }
 function renderCourseRatings() {
@@ -241,7 +224,7 @@ function renderPlan() {
  entries.forEach(r => {
   const item = el('article', undefined, 'entry');
   item.append(el('h4', new Date(r.recorded_at).toLocaleString('ja-JP')));
-  item.append(el('p', `計画通り: ${r.plan_completed ? 'はい' : 'いいえ'} · 学習時間: ${r.study_minutes}分 · 自己評価: ${r.self_rating}/5`));
+  item.append(el('p', `計画通り: ${r.plan_completed ? 'はい' : 'いいえ'} · 実際の学習時間: ${r.study_minutes}分 · 自己評価: ${r.self_rating}/5`));
   item.append(el('strong', '改善点'), el('p', r.improvement), el('strong', '明日の計画'), el('p', r.tomorrow_plan));
   dailyHistory.append(item);
  });
@@ -294,5 +277,8 @@ if ($('#plan-course')) $('#plan-course').onchange = updatePlanLectures;
 if ($('#plan-date')) $('#plan-date').onchange = () => { planDate = $('#plan-date').value || today(); render(); };
 if ($('#reflection-form')) $('#reflection-form [name=recorded_at]').value = localNow();
 if ($('#course-rating-form')) $('#course-rating-form [name=recorded_at]').value = localNow();
-if ($('#fetch-curriculum')) $('#fetch-curriculum').onclick = fetchCurriculumPreview;
+if ($('#fetch-curriculum')) {
+ $('#fetch-curriculum').onclick = fetchCurriculumPreview;
+ $('#curriculum-url').oninput = () => { curriculumPreview = null; renderCurriculumImport(); };
+}
 refresh().catch(e => message('読み込めませんでした: ' + e.message, true));

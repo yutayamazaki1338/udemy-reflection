@@ -58,6 +58,7 @@ def init():
         CREATE TABLE IF NOT EXISTS study_plans(id INTEGER PRIMARY KEY, plan_date TEXT NOT NULL, lecture_id INTEGER NOT NULL REFERENCES lectures(id), UNIQUE(plan_date, lecture_id));
         CREATE TABLE IF NOT EXISTS daily_reflections(id INTEGER PRIMARY KEY, reflection_date TEXT NOT NULL, plan_completed INTEGER NOT NULL CHECK(plan_completed IN (0, 1)), study_minutes INTEGER NOT NULL CHECK(study_minutes >= 0), self_rating INTEGER NOT NULL CHECK(self_rating BETWEEN 1 AND 5), improvement TEXT NOT NULL, tomorrow_plan TEXT NOT NULL, recorded_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS curriculum_previews(token TEXT PRIMARY KEY, course_id INTEGER NOT NULL REFERENCES courses(id), items_json TEXT NOT NULL, created_at INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS curriculum_url_previews(token TEXT PRIMARY KEY, course_url TEXT NOT NULL, course_name TEXT NOT NULL, items_json TEXT NOT NULL, created_at INTEGER NOT NULL);
         ''')
         columns = {row['name'] for row in c.execute('PRAGMA table_info(courses)')}
         if 'course_url' not in columns:
@@ -107,6 +108,8 @@ def normalize_udemy_course_url(value):
         raise ValueError('Udemy講座URLを入力してください')
     if len(value.strip()) > 500:
         raise ValueError('Udemy講座URLが長すぎます')
+    if re.search(r'[\x00-\x20\x7f]', value.strip()):
+        raise ValueError('URLに空白または制御文字は使用できません')
     try:
         parsed = urlsplit(value.strip())
         port = parsed.port
@@ -114,11 +117,23 @@ def normalize_udemy_course_url(value):
         raise ValueError('URLの形式が正しくありません')
     if parsed.scheme != 'https' or parsed.hostname not in UDEMY_HOSTS:
         raise ValueError('HTTPSのUdemy講座URL（udemy.com/course/...）を指定してください')
-    if parsed.username or parsed.password or port not in (None, 443) or parsed.query or parsed.fragment:
-        raise ValueError('認証情報・別ポート・クエリ・フラグメントを含むURLは使用できません')
+    if parsed.username or parsed.password or port not in (None, 443):
+        raise ValueError('認証情報・別ポートを含むURLは使用できません')
     if not re.fullmatch(r'/course/[A-Za-z0-9_-]+/?', parsed.path):
         raise ValueError('Udemyの講座ページURL（/course/講座名/）を指定してください')
-    return 'https://%s%s' % (parsed.hostname, parsed.path.rstrip('/') + '/')
+    return 'https://www.udemy.com%s' % (parsed.path.rstrip('/') + '/')
+
+
+def find_course_by_udemy_url(connection, canonical_url):
+    for course in connection.execute(
+        "SELECT id,course_url FROM courses WHERE course_url IS NOT NULL AND course_url != '' ORDER BY id"
+    ):
+        try:
+            if normalize_udemy_course_url(course['course_url']) == canonical_url:
+                return course
+        except ValueError:
+            continue
+    return None
 
 
 class CurriculumNode:
@@ -186,26 +201,6 @@ def _public_count(text, kind):
     return values
 
 
-def _duration_seconds(text):
-    value = ' '.join(text.split()).strip()
-    clock = re.search(r'(?<!\d)(\d{1,2}):([0-5]\d)(?::([0-5]\d))?(?!\d)', value)
-    if clock:
-        if clock.group(3) is not None:
-            return int(clock.group(1)) * 3600 + int(clock.group(2)) * 60 + int(clock.group(3))
-        return int(clock.group(1)) * 60 + int(clock.group(2))
-    hours = re.search(r'(\d+)\s*(?:hours?|hrs?|h)\b', value, re.IGNORECASE)
-    minutes = re.search(r'(\d+)\s*(?:minutes?|mins?|m)\b', value, re.IGNORECASE)
-    localized = re.search(r'(?:(\d+)\s*時間)?\s*(?:(\d+)\s*分)?', value)
-    seconds = 0
-    if hours:
-        seconds += int(hours.group(1)) * 3600
-    if minutes:
-        seconds += int(minutes.group(1)) * 60
-    if not seconds and localized and (localized.group(1) or localized.group(2)):
-        seconds = int(localized.group(1) or 0) * 3600 + int(localized.group(2) or 0) * 60
-    return seconds or None
-
-
 def parse_course_curriculum(markup):
     parser = CurriculumHTMLParser()
     try:
@@ -249,27 +244,32 @@ def parse_course_curriculum(markup):
             title = ' '.join(node.text().split())
             if not title or current is None:
                 raise CurriculumParseError('レクチャー名または所属セクションを特定できないため登録を停止しました。')
-            summary = None
-            ancestor = node.parent
-            while ancestor is not None and ancestor is not curriculum:
-                related_titles = [desc for desc in ancestor.descendants() if _has_class(desc, '__course-lecture-title')]
-                summaries = [desc for desc in ancestor.descendants() if _has_class(desc, '__item-content-summary')]
-                if len(related_titles) == 1 and summaries:
-                    summary = summaries[0]
-                    break
-                ancestor = ancestor.parent
             current['lectures'].append({
                 'title': title,
                 'position': sum(len(section['lectures']) for section in sections) + 1,
-                'duration_seconds': _duration_seconds(summary.text()) if summary else None,
             })
     if sum(len(section['lectures']) for section in sections) != expected_lectures:
         raise CurriculumParseError('レクチャー順序または所属セクションを検証できませんでした。')
+    title = ''
+    for node in nodes:
+        if node.tag == 'meta' and node.attrs.get('property') in ('og:title', 'twitter:title'):
+            title = node.attrs.get('content', '').strip()
+            if title:
+                break
+    if not title:
+        title_node = next((node for node in nodes if node.tag == 'title'), None)
+        title = ' '.join(title_node.text().split()) if title_node else ''
+    title = re.sub(r'\s*[|–—-]\s*Udemy\s*$', '', title, flags=re.IGNORECASE).strip()
     return {
         'complete': True,
+        'course_name': title,
         'expected_sections': expected_sections,
         'expected_lectures': expected_lectures,
-        'sections': sections,
+        'lectures': [
+            {'title': lecture['title'], 'position': lecture['position']}
+            for section in sections
+            for lecture in section['lectures']
+        ],
     }
 
 
@@ -511,31 +511,33 @@ class Handler(BaseHTTPRequestHandler):
                         (int(d['course_id']), scores[0], required(d, 'understanding_reason'), scores[1], required(d, 'instructor_match_reason'), stamp),
                     )
                 elif self.path == '/api/course-curriculum/preview':
-                    course_id = int(d['course_id'])
-                    course = c.execute('SELECT course_url FROM courses WHERE id=?', (course_id,)).fetchone()
-                    if not course:
-                        raise ValueError('講座が見つかりません')
-                    if not course['course_url']:
-                        raise ValueError('講座にUdemy URLが登録されていません。講座情報を確認してください。')
-                    canonical_url = normalize_udemy_course_url(course['course_url'])
+                    canonical_url = normalize_udemy_course_url(required(d, 'url'))
                     try:
                         curriculum = parse_course_curriculum(fetch_udemy_course_html(canonical_url))
                     except CurriculumFetchError as error:
                         return self.reply(502, {'error': str(error) + ' 講座の学習記録ページから手動入力してください。'})
                     except CurriculumParseError as error:
                         return self.reply(422, {'error': str(error) + ' 講座の学習記録ページから手動入力してください。'})
+                    course_name = curriculum['course_name'] or re.sub(r'[-_]+', ' ', urlsplit(canonical_url).path.split('/')[-2]).strip().title()
+                    if not course_name:
+                        raise ValueError('講座名をURLから特定できませんでした')
                     token = secrets.token_urlsafe(32)
-                    c.execute('DELETE FROM curriculum_previews WHERE created_at < ?', (int(time.time()) - 3600,))
+                    c.execute('DELETE FROM curriculum_url_previews WHERE created_at < ?', (int(time.time()) - 3600,))
                     c.execute(
-                        'INSERT INTO curriculum_previews(token,course_id,items_json,created_at) VALUES (?,?,?,?)',
-                        (token, course_id, json.dumps(curriculum, ensure_ascii=False), int(time.time())),
+                        'INSERT INTO curriculum_url_previews(token,course_url,course_name,items_json,created_at) VALUES (?,?,?,?,?)',
+                        (token, canonical_url, course_name, json.dumps(curriculum, ensure_ascii=False), int(time.time())),
                     )
-                    return self.reply(200, {'token': token, 'course_id': course_id, 'course_url': canonical_url, **curriculum})
+                    return self.reply(200, {
+                        **curriculum,
+                        'token': token,
+                        'course_url': canonical_url,
+                        'course_name': course_name,
+                    })
                 elif self.path == '/api/course-curriculum/register':
                     token = required(d, 'token')
                     c.execute('BEGIN IMMEDIATE')
                     preview = c.execute(
-                        'SELECT course_id,items_json,created_at FROM curriculum_previews WHERE token=?',
+                        'SELECT course_url,course_name,items_json,created_at FROM curriculum_url_previews WHERE token=?',
                         (token,),
                     ).fetchone()
                     if not preview or preview['created_at'] < int(time.time()) - 3600:
@@ -543,34 +545,41 @@ class Handler(BaseHTTPRequestHandler):
                     curriculum = json.loads(preview['items_json'])
                     if curriculum.get('complete') is not True:
                         raise ValueError('件数照合済みの完全なプレビューではないため、登録できません。')
-                    course_id = preview['course_id']
-                    section_offset = c.execute(
-                        'SELECT COALESCE(MAX(position), 0) FROM course_sections WHERE course_id=?',
-                        (course_id,),
-                    ).fetchone()[0]
-                    lecture_offset = c.execute(
+                    course = find_course_by_udemy_url(c, preview['course_url'])
+                    created_course = course is None
+                    if course:
+                        course_id = course['id']
+                    else:
+                        course_id = c.execute(
+                            'INSERT INTO courses(name,course_url) VALUES (?,?)',
+                            (preview['course_name'], preview['course_url']),
+                        ).lastrowid
+                    position = c.execute(
                         'SELECT COALESCE(MAX(position), 0) FROM lectures WHERE course_id=?',
                         (course_id,),
                     ).fetchone()[0]
-                    inserted_sections = 0
                     inserted_lectures = 0
-                    for section in curriculum['sections']:
-                        section_id = c.execute(
-                            'INSERT INTO course_sections(course_id,title,position) VALUES (?,?,?)',
-                            (course_id, section['title'], section_offset + section['position']),
-                        ).lastrowid
-                        inserted_sections += 1
-                        for lecture in section['lectures']:
-                            c.execute(
-                                'INSERT INTO lectures(course_id,title,watched,section_id,position,duration_seconds) VALUES (?,?,0,?,?,?)',
-                                (
-                                    course_id, lecture['title'], section_id,
-                                    lecture_offset + lecture['position'], lecture['duration_seconds'],
-                                ),
-                            )
-                            inserted_lectures += 1
-                    c.execute('DELETE FROM curriculum_previews WHERE token=?', (token,))
-                    return self.reply(200, {'ok': True, 'sections_added': inserted_sections, 'lectures_added': inserted_lectures})
+                    for lecture in curriculum['lectures']:
+                        exists = c.execute(
+                            'SELECT 1 FROM lectures WHERE course_id=? AND title=? LIMIT 1',
+                            (course_id, lecture['title']),
+                        ).fetchone()
+                        if exists:
+                            continue
+                        position += 1
+                        c.execute(
+                            'INSERT INTO lectures(course_id,title,watched,position) VALUES (?,?,0,?)',
+                            (course_id, lecture['title'], position),
+                        )
+                        inserted_lectures += 1
+                    c.execute('DELETE FROM curriculum_url_previews WHERE token=?', (token,))
+                    return self.reply(200, {
+                        'ok': True,
+                        'course_id': course_id,
+                        'course_name': preview['course_name'],
+                        'course_created': created_course,
+                        'lectures_added': inserted_lectures,
+                    })
                 elif self.path == '/api/plans':
                     plan_date = parse_date(required(d, 'plan_date'))
                     if d.get('lecture_id') not in (None, ''):
