@@ -1,5 +1,6 @@
-let state, courseId = null, lectureId = null, planDate = '';
+let state, courseId = null, lectureId = null, planDate = '', selectedDate = '';
 let curriculumPreview = null, curriculumLoading = false;
+const AI_REFLECTION_DAYS = 14;
 const $ = s => document.querySelector(s);
 const el = (tag, text, cls) => {
  const e = document.createElement(tag);
@@ -26,6 +27,9 @@ function today() {
  const d = new Date();
  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
+function dateKey(date) {
+ return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
 function dateLabel(date) {
  return new Date(`${date}T00:00:00`).toLocaleDateString('ja-JP', {year: 'numeric', month: 'long', day: 'numeric'});
 }
@@ -39,6 +43,7 @@ function render() {
  const page = document.body.dataset.page;
  if (page === 'home') {
   renderHeatmap();
+  loadAiReflection();
   return;
  }
  if (page === 'planning') {
@@ -387,14 +392,201 @@ function renderHeatmap() {
  const completedDates = new Set(state.daily_reflections.map(r => r.reflection_date));
  const start = new Date();
  start.setDate(start.getDate() - 27);
+ const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
+ const weekdayRow = el('div', undefined, 'heatmap-weekdays');
+ weekdayRow.setAttribute('aria-hidden', 'true');
+ for (let i = 0; i < 7; i++) {
+  const weekday = weekdays[(start.getDay() + i) % 7];
+  weekdayRow.append(el('span', weekday, 'heatmap-weekday'));
+ }
+ grid.append(weekdayRow);
+ if (!selectedDate) selectedDate = today();
  for (let i = 0; i < 28; i++) {
   const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
-  const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  const cell = el('span', String(d.getDate()), 'heat-cell' + (completedDates.has(date) ? ' completed' : ''));
-  cell.title = `${date}${completedDates.has(date) ? ' · 1日の振り返り完了' : ' · 未完了'}`;
-  cell.setAttribute('aria-label', cell.title);
+  const date = dateKey(d);
+  const recorded = completedDates.has(date);
+  const isToday = date === today();
+  const cell = el('button', undefined, `heat-cell ${recorded ? 'completed' : 'empty'}${isToday ? ' today' : ''}${date === selectedDate ? ' selected' : ''}`);
+  cell.type = 'button';
+  cell.dataset.date = date;
+  cell.dataset.recorded = String(recorded);
+  cell.setAttribute('aria-pressed', String(date === selectedDate));
+  cell.setAttribute('aria-label', `${dateLabel(date)}・${recorded ? '1日の振り返りあり' : '振り返りなし'}${isToday ? '・今日' : ''}`);
+  cell.append(el('span', String(d.getDate()), 'heat-day-number'));
+  if (isToday) cell.append(el('span', '今日', 'heat-day-today'));
+  cell.onclick = () => {
+   selectedDate = date;
+   renderHeatmap();
+  };
   grid.append(cell);
  }
+ renderSelectedDayReflections();
+}
+function renderSelectedDayReflections() {
+ const container = $('#selected-day-reflections');
+ container.replaceChildren();
+ const dateTitle = el('h3', `${dateLabel(selectedDate)}の振り返り`);
+ dateTitle.id = 'selected-day-title';
+ container.append(dateTitle);
+ const entries = state.daily_reflections
+  .filter(reflection => reflection.reflection_date === selectedDate)
+  .sort((a, b) => Date.parse(b.recorded_at) - Date.parse(a.recorded_at) || b.id - a.id);
+ if (!entries.length) {
+  container.append(el('p', 'この日の学習振り返りはありません。', 'muted'));
+  return;
+ }
+ entries.forEach(reflection => {
+  const item = el('article', undefined, 'entry');
+  item.append(el('h4', new Date(reflection.recorded_at).toLocaleString('ja-JP')));
+  item.append(el('p', `計画通り: ${reflection.plan_completed ? 'はい' : 'いいえ'} · 実際の学習時間: ${reflection.study_minutes}分 · 自己評価: ${reflection.self_rating}/5`));
+  item.append(el('strong', '改善点'), el('p', reflection.improvement), el('strong', '明日の計画'), el('p', reflection.tomorrow_plan));
+  container.append(item);
+ });
+}
+async function loadAiReflection(actionError = '') {
+ const container = $('#ai-reflection');
+ if (!container) return;
+ try {
+  let data = await api('/api/ai-reflection');
+  const shouldAutoGenerate = data.consented && data.api_key_configured &&
+   !data.auto_checked && !data.in_progress && !data.latest_result;
+  if (shouldAutoGenerate) {
+   renderAiReflection({...data, in_progress: true});
+   try {
+    await api('/api/ai-reflection/auto', {});
+   } catch (error) {
+    actionError = error.message;
+   }
+   data = await api('/api/ai-reflection');
+  }
+  renderAiReflection(data, actionError);
+ } catch (error) {
+  renderAiReflection(null, error.message);
+ }
+}
+function renderAiReflection(data, loadError = '') {
+ const container = $('#ai-reflection');
+ container.replaceChildren();
+ const title = el('h2', 'AI学習リフレクション');
+ title.id = 'ai-reflection-title';
+ container.append(title);
+ if (!data) {
+  container.append(el('p', `AI分析の状態を取得できませんでした: ${loadError}`, 'error'));
+  return;
+ }
+ container.append(el(
+  'p',
+  `接続状態: OpenAI APIキー ${data.api_key_configured ? '設定済み' : '未設定'} · 送信同意 ${data.consented ? '有効' : '未同意'} · 分析 ${data.latest_result ? '生成済み' : '未生成'}`,
+  'muted',
+ ));
+ container.append(el('p', '対象期間: ' + dateLabel(data.period_start) + '〜' + dateLabel(data.period_end) + ' · 自動分析はAsia/Tokyoの日付ごとに最大1回です。', 'muted'));
+ if (!data.consented) {
+  container.append(el('p', '現在は未接続・未生成です。分析を有効にするには、記録をOpenAIへ送信することへの明示的な同意が必要です。', 'ai-reflection-status'));
+ } else if (!data.api_key_configured) {
+  container.append(el('p', '同意済みですが、サーバーにOPENAI_API_KEYが設定されていないため、APIは呼び出していません。キーはブラウザーへ送信されません。', 'ai-reflection-status'));
+ } else {
+  container.append(el('p', 'OpenAIへの送信に同意済み · APIキーはサーバー環境変数から読み込みます。', 'ai-reflection-status'));
+ }
+ if (!data.yesterday_has_record) {
+  container.append(el('p', '昨日の学習記録はありません。', 'ai-reflection-yesterday-missing'));
+ }
+ if (data.analysis_record_count === 0) {
+  container.append(el('p', '分析対象となる直近14日間の学習記録はありません。分析対象なしのため、APIは呼び出しません。', 'ai-reflection-no-data'));
+ } else {
+  container.append(el('p', `直近${AI_REFLECTION_DAYS}日間の記録 ${data.analysis_record_count}件 · 対象日: ${data.analysis_dates.map(dateLabel).join('、')}。記録のある日だけを分析し、空白日は否定的に評価しません。`, 'muted'));
+ }
+ if (data.auto_count) {
+  container.append(el('p', `本日の自動API呼び出し: ${data.auto_count}/1`, 'muted'));
+ }
+ if (data.in_progress) container.append(el('p', '分析を実行中です。画面を再読み込みすると保存済みの状態を確認できます。', 'muted'));
+ if (data.stale) {
+  container.append(el('p', '保存後に学習記録または今日の計画が変わったため、この分析結果は古くなっています。既存結果は保持しています。自動再分析は行いません。', 'ai-reflection-stale'));
+ }
+ if (data.last_error) container.append(el('p', `最新の分析に失敗しました: ${data.last_error} 自動再試行は行いません。`, 'error'));
+ if (loadError && loadError !== data.last_error) container.append(el('p', `分析操作に失敗しました: ${loadError}`, 'error'));
+ const sections = [
+  [
+   'A. 昨日の振り返り',
+   data.latest_result?.sections.yesterday_reflection || (data.yesterday_has_record ? '分析結果はまだありません。' : '昨日の学習記録はありません。'),
+   data.yesterday_has_record ? `根拠日: ${dateLabel(data.yesterday_date)}` : '根拠日: 昨日の記録なし',
+  ],
+  [
+   'B. 過去の記録から見えること',
+   data.latest_result?.sections.past_observations || '分析結果はまだありません。',
+   `分析対象日: ${data.analysis_dates.map(dateLabel).join('、') || 'なし'}`,
+  ],
+  [
+   'C. 今日の学習に向けて',
+   data.latest_result?.sections.today_suggestions || '分析結果はまだありません。',
+   `対象日: ${dateLabel(data.target_date)}`,
+  ],
+ ];
+ sections.forEach(([title, description, evidence]) => {
+  const section = el('section', undefined, 'ai-reflection-section');
+  section.append(el('h3', title), el('p', description), el('small', evidence, 'muted'));
+  container.append(section);
+ });
+ if (data.latest_result) {
+  const run = data.latest_result;
+  container.append(el('p', `生成日時: ${new Date(run.generated_at).toLocaleString('ja-JP')} · ${run.run_type === 'auto' ? '自動生成' : '手動再分析'} · ${run.model} · 根拠日: ${data.analysis_dates.map(dateLabel).join('、') || 'なし'}`, 'muted'));
+ }
+ if (data.consented && data.api_key_configured) {
+  if (data.analysis_record_count > 0 && !data.in_progress) {
+   const manualButton = el('button', '手動で再分析（追加のAPI利用料金が発生します）');
+   manualButton.type = 'button';
+   manualButton.onclick = async () => {
+    if (!window.confirm('記録内容をOpenAIへ再送信して再分析します。追加のAPI利用料金が発生する可能性があります。続行しますか？')) return;
+    manualButton.disabled = true;
+    let actionError = '';
+    try {
+     await api('/api/ai-reflection/manual', {});
+    } catch (error) {
+     actionError = error.message;
+    }
+    await loadAiReflection(actionError);
+   };
+   container.append(manualButton);
+  }
+  const revoke = el('button', 'OpenAI送信への同意を取り消す');
+  revoke.type = 'button';
+  revoke.className = 'ai-consent-revoke';
+  revoke.onclick = async () => {
+   try {
+    await api('/api/ai-reflection/consent', {consent: false});
+    await loadAiReflection();
+   } catch (error) {
+    renderAiReflection(data, error.message);
+   }
+  };
+  container.append(revoke);
+ } else if (!data.consented) {
+  const form = el('form', undefined, 'ai-consent-form');
+  const label = el('label');
+  const checkbox = el('input');
+  checkbox.type = 'checkbox';
+  checkbox.required = true;
+  checkbox.name = 'consent';
+  const copy = el('span', '日次振り返りの内容（記録日時、自己評価、実際の学習時間、計画達成、改善点、明日の計画）と今日の学習計画（講座名・単元名）がOpenAIへ送信されることに同意します。空白日は否定的な評価に使いません。');
+  label.append(checkbox, copy);
+  form.append(el('p', '有効化後、対象記録がある日の初回アクセス時に自動分析を1回行い、OpenAIの利用料金が発生する可能性があります。手動再分析は追加リクエストです。', 'ai-cost-notice'));
+  const submit = el('button', '内容の送信に同意して有効化');
+  submit.type = 'submit';
+  submit.disabled = true;
+  checkbox.onchange = () => { submit.disabled = !checkbox.checked; };
+  form.append(label, submit);
+  form.onsubmit = async event => {
+   event.preventDefault();
+   submit.disabled = true;
+   try {
+    await api('/api/ai-reflection/consent', {consent: true});
+    await loadAiReflection();
+   } catch (error) {
+    renderAiReflection(data, error.message);
+   }
+  };
+  container.append(form);
+ }
+ container.append(el('p', '分析は記録内容に基づく参考情報です。自己評価は能力の証明ではありません。手動再分析はその都度追加費用が発生し得ます。', 'muted'));
 }
 function selectCourseRegistrationMode(mode, focus = false) {
  const selectedTabId = mode === 'udemy' ? 'udemy-course-tab' : 'manual-course-tab';

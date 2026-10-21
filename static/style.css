@@ -37,3 +37,20 @@ main.single-page{display:block;max-width:980px;margin:0 auto}.planning-page{grid
 #message.error{background:#f7e9e6;color:#8b302a!important}
 @media(max-width:1000px){.site-header{display:block;padding:14px 4%}.site-header nav{margin-top:12px;flex-wrap:wrap}}
 @media(max-width:680px){.site-header{padding:14px 5%}.site-identity{column-gap:10px}.site-identity h1{font-size:20px}.site-identity p{font-size:12px}.site-header nav{gap:6px}.site-header nav a{padding:8px 9px;font-size:13px}.learning-metrics{grid-template-columns:repeat(auto-fit,minmax(120px,1fr))}.delete-actions{flex-wrap:wrap}.delete-actions button{flex:1 1 auto}}
+.heatmap-weekdays{grid-column:1/-1;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}
+.heatmap-weekday{text-align:center;padding:2px 0;color:#627969;font-size:12px;font-weight:700}
+.heat-cell{width:100%;height:36px;min-width:0;padding:0 5px;display:flex;align-items:center;justify-content:center;gap:3px;border:1px solid transparent;border-radius:6px;background:#e3efcf;color:#31533c;font-size:12px;line-height:1}
+.heat-cell.empty{background:#e3efcf;color:#31533c}
+.heat-cell.completed{background:#26664f;color:#fff}
+.heat-cell.today{border:2px solid #c58a16;font-weight:700}
+.heat-cell.selected{box-shadow:0 0 0 2px #163e36;position:relative;z-index:1}
+.heat-cell:focus-visible{outline:3px solid #d8a935;outline-offset:2px}
+.heat-day-today{font-size:9px}
+.selected-day-reflections{margin-top:16px;border-top:1px solid #dce4db;padding-top:12px}
+.selected-day-reflections h3{margin:0 0 8px}
+.ai-reflection{margin-top:18px}
+.ai-reflection-status{padding:10px 12px;border-radius:8px;background:#eef3ed;color:#315b45;font-weight:600}
+.ai-reflection-no-data,.ai-reflection-yesterday-missing{padding:9px 12px;border-left:3px solid #9db778;background:#f4f7ef;color:#405a3d}
+.ai-reflection-section{border-top:1px solid #dce4db;padding-top:8px;margin-top:12px}
+.ai-reflection-section h3{margin:8px 0}
+@media(max-width:680px){#heatmap,.heatmap-weekdays{gap:3px}.heat-cell{height:34px;padding:0 2px;font-size:11px}.heat-day-today{font-size:8px}.heatmap-card,.ai-reflection{padding:14px}}

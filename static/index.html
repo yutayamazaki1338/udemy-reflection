@@ -2,5 +2,13 @@
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MetaWatch（メタウォッチ）</title><meta name="description" content="動画学習の理解と振り返りを記録するツール"><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="stylesheet" href="/style.css"></head>
 <body data-page="home"><header class="site-header"><div class="site-identity"><a class="brand" href="/" aria-label="MetaWatch メインページ"><img class="brand-mark" src="/brand-mark.svg" alt=""><img class="brand-wordmark" src="/brand-wordmark.svg" alt="MetaWatch"></a><h1>「観た」を「学んだ」に変える。</h1><p>動画学習の理解と振り返りを記録するツール</p></div><nav aria-label="メインナビゲーション"><a class="active" aria-current="page" href="/">メインページ</a><a href="/planning">学習計画</a><a href="/learning">講座の学習記録</a></nav></header>
 <div id="message" role="status" aria-live="polite"></div>
-<main class="single-page"><section class="card heatmap-card"><h2>学習の記録 · 直近4週間</h2><p class="muted">1日の振り返りを完了した日は緑色で表示されます。</p><div id="heatmap" aria-label="直近4週間の日次振り返りカレンダー"></div></section></main>
+<main class="single-page">
+ <section class="card heatmap-card" aria-labelledby="heatmap-title">
+  <h2 id="heatmap-title">学習の記録 · 直近4週間</h2>
+  <p class="muted">1日の振り返りを完了した日は深緑、記録のない日は淡い黄緑で表示されます。日付を選ぶとその日の振り返りを確認できます。</p>
+  <div id="heatmap" aria-label="直近4週間の日次振り返りカレンダー"></div>
+  <section id="selected-day-reflections" class="selected-day-reflections" aria-live="polite" aria-labelledby="selected-day-title"></section>
+ </section>
+ <section id="ai-reflection" class="card ai-reflection" aria-live="polite" aria-labelledby="ai-reflection-title"></section>
+</main>
 <script src="/app.js"></script></body></html>

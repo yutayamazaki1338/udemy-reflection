@@ -4,8 +4,10 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import Mock
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -174,6 +176,12 @@ class ParseRecordedAtTests(unittest.TestCase):
 
 
 class ApiFeatureTests(unittest.TestCase):
+    AI_RESULT = {
+        'yesterday_reflection': '昨日は記録がありません。',
+        'past_observations': '2026-10-20の記録を確認しました。',
+        'today_suggestions': '今日の計画を確認しましょう。',
+    }
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_patch = patch.object(app, 'DB', Path(self.temp_dir.name) / 'reflection.sqlite3')
@@ -199,6 +207,21 @@ class ApiFeatureTests(unittest.TestCase):
                 return response.status, json.loads(response.read())
         except HTTPError as error:
             return error.code, json.loads(error.read())
+
+    def create_ai_daily_record(self, reflection_date=None, improvement='振り返りの記録'):
+        day = reflection_date or app.tokyo_today().isoformat()
+        return self.request_json('/api/daily-reflections', {
+            'reflection_date': day,
+            'plan_completed': True,
+            'study_minutes': 35,
+            'self_rating': 4,
+            'improvement': improvement,
+            'tomorrow_plan': '次の単元を確認する',
+            'recorded_at': datetime.now(timezone.utc).isoformat(),
+        })
+
+    def consent_to_ai(self):
+        return self.request_json('/api/ai-reflection/consent', {'consent': True})
 
     def test_course_ratings_and_daily_plans_are_independent_histories(self):
         self.assertEqual(self.request_json('/api/courses', {'name': '基礎講座'})[0], 200)
@@ -353,6 +376,229 @@ class ApiFeatureTests(unittest.TestCase):
                 self.assertIn('href="/learning">講座の学習記録</a>', page)
                 self.assertEqual(page.count('aria-current="page"'), 1)
                 self.assertIn('class="site-header"', page)
+
+    def test_home_calendar_is_compact_selectable_and_ai_reflection_is_unconnected(self):
+        with urlopen(self.base_url + '/') as response:
+            page = response.read().decode('utf-8')
+        with urlopen(self.base_url + '/app.js') as response:
+            script = response.read().decode('utf-8')
+        with urlopen(self.base_url + '/style.css') as response:
+            stylesheet = response.read().decode('utf-8')
+        server_source = Path(app.__file__).read_text(encoding='utf-8')
+
+        self.assertIn('id="heatmap"', page)
+        self.assertIn('id="selected-day-reflections"', page)
+        self.assertIn('id="ai-reflection"', page)
+        self.assertIn('def ai_reflection_inputs(connection, target_date):', server_source)
+        self.assertIn("api('/api/ai-reflection')", script)
+        self.assertIn('function renderAiReflection(data', script)
+        self.assertIn('cell.dataset.date = date;', script)
+        self.assertIn('cell.dataset.recorded = String(recorded);', script)
+        self.assertIn("cell.setAttribute('aria-pressed'", script)
+        self.assertIn('function renderSelectedDayReflections()', script)
+        self.assertIn('height:36px', stylesheet)
+        self.assertIn('@media(max-width:680px){#heatmap,.heatmap-weekdays{gap:3px}', stylesheet)
+        self.assertIn('昨日の学習記録はありません。', script)
+        self.assertIn('分析対象となる直近14日間の学習記録はありません。', script)
+        self.assertIn('現在は未接続・未生成です。', script)
+
+    def test_ai_reflection_skips_without_consent_key_or_records(self):
+        status, details = self.request_json('/api/ai-reflection')
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            details['yesterday_date'],
+            (app.tokyo_today() - timedelta(days=1)).isoformat(),
+        )
+        self.assertFalse(details['api_key_configured'])
+        self.assertFalse(details['consented'])
+        self.assertEqual(details['analysis_record_count'], 0)
+
+        with patch.dict('os.environ', {'OPENAI_API_KEY': 'test-key'}), patch.object(app, 'request_openai_reflection') as request:
+            status, result = self.request_json('/api/ai-reflection/auto', {})
+            self.assertEqual(status, 403)
+            request.assert_not_called()
+        self.assertEqual(self.consent_to_ai()[0], 200)
+        with patch.dict('os.environ', {'OPENAI_API_KEY': ''}), patch.object(app, 'request_openai_reflection') as request:
+            status, result = self.request_json('/api/ai-reflection/auto', {})
+            self.assertEqual(status, 503)
+            self.assertIn('OPENAI_API_KEY', result['error'])
+            request.assert_not_called()
+
+        with patch.dict('os.environ', {'OPENAI_API_KEY': 'test-key'}), patch.object(app, 'request_openai_reflection') as request:
+            status, result = self.request_json('/api/ai-reflection/auto', {})
+            self.assertEqual(status, 200)
+            self.assertEqual(result['status'], 'no_records')
+            self.create_ai_daily_record()
+            status, result = self.request_json('/api/ai-reflection/auto', {})
+            self.assertEqual(status, 200)
+            self.assertEqual(result['status'], 'already_checked')
+            request.assert_not_called()
+        with app.connect() as connection:
+            daily = connection.execute(
+                'SELECT auto_count,auto_checked FROM ai_reflection_daily_state WHERE target_date=?',
+                (app.tokyo_today().isoformat(),),
+            ).fetchone()
+        self.assertEqual(tuple(daily), (0, 1))
+
+    def test_ai_analysis_uses_only_records_in_the_tokyo_fourteen_day_window(self):
+        today = app.tokyo_today()
+        dates = [
+            today - timedelta(days=14),
+            today - timedelta(days=13),
+            today - timedelta(days=1),
+            today,
+        ]
+        for day in dates:
+            self.create_ai_daily_record(day.isoformat(), '根拠 ' + day.isoformat())
+        status, details = self.request_json('/api/ai-reflection')
+        self.assertEqual(status, 200)
+        self.assertEqual(details['period_start'], (today - timedelta(days=13)).isoformat())
+        self.assertEqual(details['analysis_dates'], [
+            (today - timedelta(days=13)).isoformat(),
+            (today - timedelta(days=1)).isoformat(),
+            today.isoformat(),
+        ])
+        self.assertTrue(details['yesterday_has_record'])
+        with patch.dict('os.environ', {'OPENAI_API_KEY': 'test-key'}), patch.object(
+            app, 'request_openai_reflection', return_value=self.AI_RESULT
+        ) as request:
+            self.assertEqual(self.consent_to_ai()[0], 200)
+            self.assertEqual(self.request_json('/api/ai-reflection/auto', {})[0], 200)
+            payload = request.call_args.args[1]
+            self.assertEqual(len(payload['daily_reflections']), 3)
+            self.assertNotIn('id', payload['daily_reflections'][0])
+        with app.connect() as connection:
+            run = connection.execute(
+                'SELECT target_date,record_ids_json,input_hash,model,prompt_version FROM ai_reflection_runs'
+            ).fetchone()
+        self.assertEqual(run['target_date'], today.isoformat())
+        self.assertEqual(len(json.loads(run['record_ids_json'])['daily_reflection_ids']), 3)
+        self.assertEqual(len(run['input_hash']), 64)
+        self.assertEqual(run['model'], app.AI_REFLECTION_MODEL)
+        self.assertEqual(run['prompt_version'], app.AI_REFLECTION_PROMPT_VERSION)
+
+    def test_ai_auto_analysis_is_single_flight_across_concurrent_tabs(self):
+        self.create_ai_daily_record()
+        self.assertEqual(self.consent_to_ai()[0], 200)
+        started = threading.Event()
+        release = threading.Event()
+
+        def fake_request(model, payload):
+            started.set()
+            release.wait(3)
+            return self.AI_RESULT
+
+        with patch.dict('os.environ', {'OPENAI_API_KEY': 'test-key'}), patch.object(
+            app, 'request_openai_reflection', side_effect=fake_request
+        ) as request:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(self.request_json, '/api/ai-reflection/auto', {})
+                self.assertTrue(started.wait(2))
+                second = pool.submit(self.request_json, '/api/ai-reflection/auto', {})
+                second_status, second_result = second.result(timeout=2)
+                release.set()
+                first_status, first_result = first.result(timeout=3)
+            self.assertEqual(first_status, 200)
+            self.assertEqual(first_result['status'], 'succeeded')
+            self.assertEqual(second_status, 200)
+            self.assertEqual(second_result['status'], 'already_checked')
+            request.assert_called_once()
+        status, details = self.request_json('/api/ai-reflection')
+        self.assertEqual(status, 200)
+        self.assertEqual(details['auto_count'], 1)
+        self.assertIsNotNone(details['latest_result'])
+
+    def test_ai_result_survives_restart_and_record_changes_require_manual_rerun(self):
+        target_date = app.tokyo_today().isoformat()
+        self.create_ai_daily_record(target_date, '最初の記録')
+        self.assertEqual(self.consent_to_ai()[0], 200)
+        with patch.dict('os.environ', {'OPENAI_API_KEY': 'test-key'}), patch.object(
+            app, 'request_openai_reflection', return_value=self.AI_RESULT
+        ) as request:
+            self.assertEqual(self.request_json('/api/ai-reflection/auto', {})[0], 200)
+            app.init()
+            status, details = self.request_json('/api/ai-reflection')
+            self.assertEqual(status, 200)
+            self.assertEqual(details['auto_count'], 1)
+            self.assertEqual(details['latest_result']['sections'], self.AI_RESULT)
+            self.create_ai_daily_record(target_date, '追加された記録')
+            status, details = self.request_json('/api/ai-reflection')
+            self.assertTrue(details['stale'])
+            status, result = self.request_json('/api/ai-reflection/auto', {})
+            self.assertEqual(result['status'], 'already_checked')
+            self.assertEqual(request.call_count, 1)
+            status, result = self.request_json('/api/ai-reflection/manual', {})
+            self.assertEqual(status, 200)
+            self.assertEqual(result['status'], 'succeeded')
+            self.assertEqual(request.call_count, 2)
+            status, details = self.request_json('/api/ai-reflection')
+            self.assertEqual(details['auto_count'], 1)
+            self.assertFalse(details['stale'])
+            self.assertEqual(details['latest_result']['run_type'], 'manual')
+            next_date = app.tokyo_today() + timedelta(days=1)
+            with patch.object(app, 'tokyo_today', return_value=next_date):
+                status, result = self.request_json('/api/ai-reflection/auto', {})
+                self.assertEqual(status, 200)
+                self.assertEqual(result['status'], 'succeeded')
+                status, next_day = self.request_json('/api/ai-reflection')
+                self.assertEqual(next_day['target_date'], next_date.isoformat())
+                self.assertEqual(next_day['auto_count'], 1)
+            self.assertEqual(request.call_count, 3)
+        with app.connect() as connection:
+            run_types = [row['run_type'] for row in connection.execute(
+                'SELECT run_type FROM ai_reflection_runs WHERE target_date=? ORDER BY id',
+                (target_date,),
+            )]
+        self.assertEqual(run_types, ['auto', 'manual'])
+
+    def test_ai_api_failure_is_cached_and_does_not_auto_retry_or_erase_success(self):
+        self.create_ai_daily_record()
+        self.assertEqual(self.consent_to_ai()[0], 200)
+        with patch.dict('os.environ', {'OPENAI_API_KEY': 'test-key'}), patch.object(
+            app, 'request_openai_reflection', side_effect=[self.AI_RESULT, app.AIReflectionError('一時的なAPIエラー')]
+        ) as request:
+            self.assertEqual(self.request_json('/api/ai-reflection/auto', {})[0], 200)
+            status, result = self.request_json('/api/ai-reflection/manual', {})
+            self.assertEqual(status, 502)
+            self.assertIn('一時的なAPIエラー', result['error'])
+            status, details = self.request_json('/api/ai-reflection')
+            self.assertEqual(details['latest_result']['sections'], self.AI_RESULT)
+            self.assertIn('一時的なAPIエラー', details['last_error'])
+            self.assertEqual(self.request_json('/api/ai-reflection/auto', {})[1]['status'], 'already_checked')
+            self.assertEqual(request.call_count, 2)
+
+    def test_openai_request_uses_server_key_and_validates_structured_response(self):
+        response_body = json.dumps({
+            'choices': [{'message': {'content': json.dumps(self.AI_RESULT, ensure_ascii=False)}}],
+        }).encode('utf-8')
+        response = Mock()
+        response.status = 200
+        response.read.return_value = response_body
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        payload = {
+            'target_date': '2026-10-21',
+            'daily_reflections': [{'reflection_date': '2026-10-20', 'improvement': '記録'}],
+            'today_study_plan': [{'course_name': '講座名', 'lecture_title': '単元名'}],
+        }
+        with patch.dict('os.environ', {'OPENAI_API_KEY': 'server-only-test-key'}), patch.object(
+            app.urllib.request, 'urlopen', return_value=response
+        ) as urlopen_mock:
+            self.assertEqual(app.request_openai_reflection('gpt-4o-mini', payload), self.AI_RESULT)
+        request = urlopen_mock.call_args.args[0]
+        self.assertEqual(request.full_url, 'https://api.openai.com/v1/chat/completions')
+        self.assertEqual(request.get_header('Authorization'), 'Bearer server-only-test-key')
+        request_body = json.loads(request.data)
+        self.assertEqual(request_body['model'], 'gpt-4o-mini')
+        self.assertEqual(request_body['response_format']['type'], 'json_schema')
+        self.assertEqual(urlopen_mock.call_count, 1)
+
+        response.read.return_value = json.dumps({'choices': [{'message': {'content': '{"invalid":true}'}}]}).encode()
+        with patch.dict('os.environ', {'OPENAI_API_KEY': 'server-only-test-key'}), patch.object(
+            app.urllib.request, 'urlopen', return_value=response
+        ):
+            with self.assertRaisesRegex(app.AIReflectionError, '必要な項目'):
+                app.request_openai_reflection('gpt-4o-mini', payload)
 
     def test_brand_assets_are_transparent_and_responsive_header_is_defined(self):
         for path, viewbox in (
