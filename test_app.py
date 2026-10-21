@@ -504,7 +504,7 @@ class ApiFeatureTests(unittest.TestCase):
         self.assertEqual(preview['study_plans'][0]['plan_date'], '2026-10-21')
         self.assertEqual(len(preview['daily_reflections']), 1)
 
-    def test_course_delete_archives_unselected_data_and_preserves_daily_reflections(self):
+    def test_course_delete_removes_all_related_data_after_explicit_consent_without_archiving(self):
         self.assertEqual(self.request_json('/api/courses', {'name': '講座削除'})[0], 200)
         self.assertEqual(self.request_json('/api/lectures', {
             'course_id': 1,
@@ -544,10 +544,15 @@ class ApiFeatureTests(unittest.TestCase):
         self.assertEqual(status, 200)
         status, deleted = self.request_json('/api/courses/delete', {
             'preview_token': deletion_preview['preview_token'],
-            'delete_categories': ['reflections', 'course_ratings'],
+            'delete_categories': [
+                'course', 'sections_lectures', 'reflections',
+                'course_ratings', 'study_plans', 'daily_reflections',
+            ],
+            'confirm_delete': True,
         })
         self.assertEqual(status, 200)
-        self.assertEqual(deleted['archived_categories'], ['sections', 'lectures', 'study_plans'])
+        self.assertEqual(deleted['course_name'], '講座削除')
+        self.assertEqual(deleted['daily_reflections_deleted'], 1)
         state = self.request_json('/api/state')[1]
         self.assertEqual(state['courses'], [])
         self.assertEqual(state['course_sections'], [])
@@ -555,27 +560,37 @@ class ApiFeatureTests(unittest.TestCase):
         self.assertEqual(state['reflections'], [])
         self.assertEqual(state['course_ratings'], [])
         self.assertEqual(state['study_plans'], [])
-        self.assertEqual(len(state['daily_reflections']), 1)
-        self.assertEqual(len(state['course_archives']), 1)
-        archive = state['course_archives'][0]
-        self.assertEqual(archive['course_name'], '講座削除')
-        self.assertEqual(json.loads(archive['preserved_categories']), ['sections', 'lectures', 'study_plans'])
-        archived_data = json.loads(archive['records_json'])
-        self.assertEqual(archived_data['lectures'][0]['title'], '単元')
-        self.assertEqual(archived_data['study_plans'][0]['lecture_title'], '単元')
+        self.assertEqual(state['daily_reflections'], [])
+        self.assertEqual(state['course_archives'], [])
         full_export = self.request_json('/api/export.json')[1]
-        self.assertEqual(full_export['course_archives'], state['course_archives'])
+        self.assertEqual(full_export['course_archives'], [])
 
-    def test_course_delete_rejects_unknown_categories_without_deleting(self):
+    def test_course_delete_rejects_missing_consent_or_categories_without_deleting(self):
         self.assertEqual(self.request_json('/api/courses', {'name': '保護講座'})[0], 200)
+        self.assertEqual(self.request_json('/api/lectures', {'course_id': 1, 'title': '保持する単元'})[0], 200)
         _, preview = self.request_json('/api/course-delete-preview?course_id=1')
+        categories = [
+            'course', 'sections_lectures', 'reflections',
+            'course_ratings', 'study_plans', 'daily_reflections',
+        ]
         status, error = self.request_json('/api/courses/delete', {
             'preview_token': preview['preview_token'],
-            'delete_categories': ['unknown'],
+            'delete_categories': categories,
+            'confirm_delete': False,
         })
         self.assertEqual(status, 400)
-        self.assertIn('不正な項目', error['error'])
-        self.assertEqual(len(self.request_json('/api/state')[1]['courses']), 1)
+        self.assertIn('明示的な同意', error['error'])
+        status, error = self.request_json('/api/courses/delete', {
+            'preview_token': preview['preview_token'],
+            'delete_categories': ['course', 'sections_lectures'],
+            'confirm_delete': True,
+        })
+        self.assertEqual(status, 400)
+        self.assertIn('すべての削除に明示的な同意', error['error'])
+        state = self.request_json('/api/state')[1]
+        self.assertEqual(len(state['courses']), 1)
+        self.assertEqual(len(state['lectures']), 1)
+        self.assertEqual(state['course_archives'], [])
 
     def test_course_delete_requires_fresh_preview_of_exact_related_records(self):
         self.assertEqual(self.request_json('/api/courses', {'name': '変更確認講座'})[0], 200)
@@ -583,7 +598,11 @@ class ApiFeatureTests(unittest.TestCase):
         self.assertEqual(self.request_json('/api/lectures', {'course_id': 1, 'title': '後から追加'})[0], 200)
         status, error = self.request_json('/api/courses/delete', {
             'preview_token': preview['preview_token'],
-            'delete_categories': ['sections_lectures', 'reflections', 'course_ratings', 'study_plans'],
+            'delete_categories': [
+                'course', 'sections_lectures', 'reflections',
+                'course_ratings', 'study_plans', 'daily_reflections',
+            ],
+            'confirm_delete': True,
         })
         self.assertEqual(status, 400)
         self.assertIn('プレビュー後に変更されました', error['error'])
@@ -613,6 +632,15 @@ class ApiFeatureTests(unittest.TestCase):
         self.assertIn('\nfunction renderCurriculumImport() {', script)
         self.assertNotIn('\n  function renderCurriculumImport() {', script)
         self.assertIn('fetchButton.disabled = !input.value.trim() || curriculumLoading;', script)
+
+    def test_course_deletion_ui_requires_explicit_selection_of_every_category(self):
+        with urlopen(self.base_url + '/app.js') as response:
+            script = response.read().decode('utf-8')
+        self.assertIn('1つでも未選択なら講座削除は中止され', script)
+        self.assertIn('checkbox.onchange = () => { confirmDelete.disabled = checkboxes.some(item => !item.checked); };', script)
+        self.assertIn("confirmDelete.disabled = true;", script)
+        self.assertIn("confirm_delete: true", script)
+        self.assertIn('アーカイブは作成されません', script)
         self.assertIn("$('#fetch-curriculum').onclick = fetchCurriculumPreview;", script)
         self.assertIn("api('/api/course-curriculum/preview', {url: input.value})", script)
         self.assertIn("api('/api/course-curriculum/register', {token: curriculumPreview.token})", script)

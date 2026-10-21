@@ -156,64 +156,65 @@ async function openCourseDeletion(courseIdToDelete) {
  dialog.setAttribute('aria-labelledby', 'delete-dialog-title');
  dialog.append(el('h2', `講座「${details.course.name}」の削除内容を確認`));
  dialog.querySelector('h2').id = 'delete-dialog-title';
- dialog.append(el('p', '講座レコードは削除されます。各カテゴリのチェックを外した記録は、削除後もアーカイブに保持されます。'));
+ dialog.append(el('p', '講座と関連データは一括で完全削除され、元に戻せません。対象をすべて確認して同意してください。1つでも未選択なら講座削除は中止され、データは削除されません。'));
  appendDeletionTargets(dialog, 'セクション', details.sections, section => section.title);
  appendDeletionTargets(dialog, '単元・セクション情報', details.lectures, lecture => `${lecture.section_title ? lecture.section_title + ' / ' : ''}${lecture.title}${lecture.watched ? '（視聴済み）' : ''}（振り返り ${lecture.reflection_count}件・計画 ${lecture.plan_count}件）`);
  appendDeletionTargets(dialog, '単元の振り返り', details.reflections, reflection => `${reflection.lecture_title} · ${new Date(reflection.recorded_at).toLocaleString('ja-JP')}`);
  appendDeletionTargets(dialog, '講座評価', details.course_ratings, rating => `${new Date(rating.recorded_at).toLocaleString('ja-JP')} · 理解度 ${rating.understanding}/5・講師とのマッチ度 ${rating.instructor_match}/5`);
  appendDeletionTargets(dialog, '学習計画', details.study_plans, plan => `${plan.plan_date} · ${plan.lecture_title}`);
+ appendDeletionTargets(dialog, '日次振り返り（関連する計画日）', details.daily_reflections, reflection => `${reflection.reflection_date} · ${new Date(reflection.recorded_at).toLocaleString('ja-JP')}`);
  const groups = [
+  ['course', '講座本体', 1],
   ['sections_lectures', '単元・セクション情報', details.lectures.length + details.sections.length],
   ['reflections', '単元の振り返り', details.reflections.length],
   ['course_ratings', '講座評価', details.course_ratings.length],
   ['study_plans', '学習計画', details.study_plans.length],
+  ['daily_reflections', '日次振り返り（関連する計画日）', details.daily_reflections.length],
  ];
  const choices = el('fieldset', undefined, 'delete-categories');
- choices.append(el('legend', '完全に削除するデータを選択（未選択分はアーカイブ）'));
+ choices.append(el('legend', '削除する対象すべてに同意（未選択があると削除を中止）'));
+ const checkboxes = [];
  groups.forEach(([key, label, count]) => {
   const choice = el('label', undefined, 'delete-choice');
   const checkbox = el('input');
   checkbox.type = 'checkbox';
-  checkbox.checked = true;
   checkbox.value = key;
   checkbox.setAttribute('aria-label', `${label} ${count}件を削除`);
+  checkbox.onchange = () => { confirmDelete.disabled = checkboxes.some(item => !item.checked); };
+  checkboxes.push(checkbox);
   choice.append(checkbox, el('span', `${label} (${count}件)`));
   choices.append(choice);
  });
  dialog.append(choices);
- dialog.append(el('p', `計画日と同日に記録された日次振り返りは講座に直接結び付いていないため、削除対象にせず保持します（${details.daily_reflections.length}件）。` , 'muted'));
- dialog.append(el('p', 'アーカイブしたデータは全データJSONのダウンロードに含まれます。', 'muted'));
+ dialog.append(el('p', '関連する計画日の日次振り返りも削除対象です。選択した対象はアーカイブされません。', 'muted'));
  const actions = el('div', undefined, 'delete-actions');
  const cancel = el('button', 'キャンセル');
  cancel.type = 'button';
  cancel.onclick = () => backdrop.remove();
- const confirmDelete = el('button', '選択したデータで講座を削除', 'danger');
+ const confirmDelete = el('button', '同意して講座と関連データを削除', 'danger');
  confirmDelete.type = 'button';
+ confirmDelete.disabled = true;
  confirmDelete.onclick = async () => {
-  const selected = [...choices.querySelectorAll('input:checked')].map(input => input.value);
-  const selectedLabels = groups.filter(([key]) => selected.includes(key)).map(([, label, count]) => `${label} ${count}件`);
-  const archivedLabels = groups.filter(([key]) => !selected.includes(key)).map(([, label, count]) => `${label} ${count}件`);
+  const selected = checkboxes.filter(input => input.checked).map(input => input.value);
+  if (selected.length !== groups.length) return;
+  const selectedLabels = groups.map(([, label, count]) => `${label} ${count}件`);
   const summary = [
-   `講座「${details.course.name}」を削除します。`,
-   `完全削除: ${selectedLabels.join('、') || '該当なし'}`,
-   `アーカイブ保持: ${archivedLabels.join('、') || '該当なし'}`,
-   `日次振り返り ${details.daily_reflections.length}件は保持`,
-   'この操作を続けますか？',
+   `講座「${details.course.name}」と関連データを完全削除します。`,
+   `削除対象: ${selectedLabels.join('、')}`,
+   'アーカイブは作成されません。この操作は元に戻せません。',
+   '削除を実行しますか？',
   ].join('\n');
   if (!window.confirm(summary)) return;
   confirmDelete.disabled = true;
   try {
-   const result = await api('/api/courses/delete', {preview_token: details.preview_token, delete_categories: selected});
+   const result = await api('/api/courses/delete', {preview_token: details.preview_token, delete_categories: selected, confirm_delete: true});
    backdrop.remove();
    if (courseId === courseIdToDelete) {
     courseId = null;
     lectureId = null;
    }
    await refresh();
-   const archiveLabels = {sections: 'セクション', lectures: '単元', reflections: '単元の振り返り', course_ratings: '講座評価', study_plans: '学習計画'};
-   const archivedNames = result.archived_categories.map(category => archiveLabels[category] || category);
-   const archived = archivedNames.length ? `未選択データはアーカイブに保持しました（${archivedNames.join('、')}）。` : 'アーカイブ対象はありません。';
-   message(`講座「${result.course_name}」を削除しました。${archived}日次振り返りは保持しています。`);
+   message(`講座「${result.course_name}」と関連データを削除しました（関連する日次振り返り ${result.daily_reflections_deleted}件を含む）。`);
   } catch (error) {
    confirmDelete.disabled = false;
    message(error.message, true);

@@ -614,9 +614,12 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(requested_categories, list) or any(not isinstance(category, str) for category in requested_categories):
                         raise ValueError('削除対象の指定が不正です')
                     delete_categories = set(requested_categories)
-                    allowed_categories = {'sections_lectures', 'reflections', 'course_ratings', 'study_plans'}
-                    if not delete_categories <= allowed_categories:
-                        raise ValueError('削除対象に不正な項目が含まれています')
+                    required_categories = {
+                        'course', 'sections_lectures', 'reflections',
+                        'course_ratings', 'study_plans', 'daily_reflections',
+                    }
+                    if d.get('confirm_delete') is not True or delete_categories != required_categories or len(requested_categories) != len(delete_categories):
+                        raise ValueError('講座と関連データすべての削除に明示的な同意が必要です。削除は実行されていません。')
                     c.execute('BEGIN IMMEDIATE')
                     preview = c.execute(
                         'SELECT course_id,details_json,created_at FROM course_delete_previews WHERE token=?',
@@ -629,37 +632,16 @@ class Handler(BaseHTTPRequestHandler):
                     if json.dumps(details, ensure_ascii=False, sort_keys=True) != preview['details_json']:
                         raise ValueError('講座の関連データがプレビュー後に変更されました。最新の内容を再確認してください。')
                     course = details['course']
-                    retained = {}
-                    if 'sections_lectures' not in delete_categories:
-                        retained['sections'] = details['sections']
-                        retained['lectures'] = details['lectures']
-                    if 'reflections' not in delete_categories:
-                        retained['reflections'] = details['reflections']
-                    if 'course_ratings' not in delete_categories:
-                        retained['course_ratings'] = details['course_ratings']
-                    if 'study_plans' not in delete_categories:
-                        retained['study_plans'] = details['study_plans']
-                    preserved_categories = [key for key, records in retained.items() if records]
-                    if preserved_categories:
-                        c.execute(
-                            '''INSERT INTO course_archives
-                               (archived_at,original_course_id,course_name,course_url,preserved_categories,records_json)
-                               VALUES (?,?,?,?,?,?)''',
-                            (
-                                datetime.now(timezone.utc).isoformat(),
-                                course['id'],
-                                course['name'],
-                                course['course_url'],
-                                json.dumps(preserved_categories, ensure_ascii=False),
-                                json.dumps({key: retained[key] for key in preserved_categories}, ensure_ascii=False),
-                            ),
-                        )
                     lecture_ids = [lecture['id'] for lecture in details['lectures']]
                     if lecture_ids:
                         placeholders = ','.join('?' for _ in lecture_ids)
                         c.execute('DELETE FROM reflections WHERE lecture_id IN (' + placeholders + ')', lecture_ids)
                         c.execute('DELETE FROM study_plans WHERE lecture_id IN (' + placeholders + ')', lecture_ids)
                     c.execute('DELETE FROM course_ratings WHERE course_id=?', (course_id,))
+                    daily_reflection_ids = [reflection['id'] for reflection in details['daily_reflections']]
+                    if daily_reflection_ids:
+                        placeholders = ','.join('?' for _ in daily_reflection_ids)
+                        c.execute('DELETE FROM daily_reflections WHERE id IN (' + placeholders + ')', daily_reflection_ids)
                     c.execute('DELETE FROM lectures WHERE course_id=?', (course_id,))
                     c.execute('DELETE FROM course_sections WHERE course_id=?', (course_id,))
                     c.execute('DELETE FROM courses WHERE id=?', (course_id,))
@@ -667,8 +649,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.reply(200, {
                         'ok': True,
                         'course_name': course['name'],
-                        'archived_categories': preserved_categories,
-                        'daily_reflections_preserved': len(details['daily_reflections']),
+                        'deleted_categories': sorted(delete_categories),
+                        'daily_reflections_deleted': len(daily_reflection_ids),
                     })
                 elif self.path == '/api/lectures':
                     course_id = int(d['course_id'])
