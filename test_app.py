@@ -344,6 +344,30 @@ class ApiFeatureTests(unittest.TestCase):
                 self.assertIn('MetaWatch（メタウォッチ）', page)
                 self.assertIn('「観た」を「学んだ」に変える。', page)
                 self.assertIn('動画学習の理解と振り返りを記録するツール', page)
+                self.assertIn('href="/favicon.svg"', page)
+                self.assertIn('class="brand"', page)
+                self.assertIn('src="/brand-mark.svg"', page)
+                self.assertIn('src="/brand-wordmark.svg"', page)
+                self.assertIn('href="/">メインページ</a>', page)
+                self.assertIn('href="/planning">学習計画</a>', page)
+                self.assertIn('href="/learning">講座の学習記録</a>', page)
+
+    def test_brand_assets_are_transparent_and_responsive_header_is_defined(self):
+        for path, viewbox in (
+            ('/brand-mark.svg', '0 0 44 44'),
+            ('/brand-wordmark.svg', '0 0 190 40'),
+            ('/favicon.svg', '0 0 32 32'),
+        ):
+            with urlopen(self.base_url + path) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.headers.get_content_type(), 'image/svg+xml')
+                asset = response.read().decode('utf-8')
+                self.assertIn(f'viewBox="{viewbox}"', asset)
+                self.assertNotIn('<rect', asset)
+        with urlopen(self.base_url + '/style.css') as response:
+            stylesheet = response.read().decode('utf-8')
+        self.assertIn('.brand-mark{display:block;width:42px;height:42px', stylesheet)
+        self.assertIn('@media(max-width:680px){.brand{height:42px}.brand-mark{width:40px;height:40px}', stylesheet)
 
         for path, filename in (
             ('/api/export/planning.json', 'learning-plans.json'),

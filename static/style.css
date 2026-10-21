@@ -4,3 +4,5 @@ main.single-page{display:block;max-width:980px;margin:0 auto}.planning-page{grid
 @media(max-width:1250px){.learning-page{grid-template-columns:200px 1fr}.learning-page #journal{grid-column:2}.planning-page{grid-template-columns:1fr 1fr}}
 @media(max-width:850px){.planning-page{grid-template-columns:1fr}.learning-page{grid-template-columns:200px 1fr}.learning-page #journal{grid-column:2}}
 @media(max-width:680px){header{display:block;padding:25px 5%}nav{margin-top:20px;flex-wrap:wrap}h1{font-size:25px}main{display:block;padding:20px 5%}main>*,aside{margin-bottom:20px}#courses{display:flex;flex-wrap:wrap;gap:6px}#courses button{width:auto}.ratings{grid-template-columns:1fr}.page-heading{display:block}.page-heading .download{margin:0 0 16px}}
+.site-identity{min-width:0}.brand{display:inline-flex;align-items:center;gap:7px;height:44px;margin-bottom:2px;text-decoration:none}.brand-mark{display:block;width:42px;height:42px;flex:none}.brand-wordmark{display:block;width:166px;height:auto;max-height:36px;flex:none}.site-identity h1{margin:7px 0 8px}
+@media(max-width:680px){.brand{height:42px}.brand-mark{width:40px;height:40px}.brand-wordmark{width:154px;max-height:34px}}

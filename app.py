@@ -579,6 +579,9 @@ class Handler(BaseHTTPRequestHandler):
             '/learning.html': ('learning.html', 'text/html; charset=utf-8'),
             '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
             '/style.css': ('style.css', 'text/css; charset=utf-8'),
+            '/brand-mark.svg': ('brand-mark.svg', 'image/svg+xml'),
+            '/brand-wordmark.svg': ('brand-wordmark.svg', 'image/svg+xml'),
+            '/favicon.svg': ('favicon.svg', 'image/svg+xml'),
         }
         if path in files:
             name, kind = files[path]
