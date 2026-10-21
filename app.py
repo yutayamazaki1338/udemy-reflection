@@ -21,7 +21,7 @@ from html.parser import HTMLParser
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parent
 DB = Path(os.environ.get('REFLECTION_DB', str(ROOT / 'data' / 'reflection.sqlite3')))
@@ -60,6 +60,8 @@ def init():
         CREATE TABLE IF NOT EXISTS daily_reflections(id INTEGER PRIMARY KEY, reflection_date TEXT NOT NULL, plan_completed INTEGER NOT NULL CHECK(plan_completed IN (0, 1)), study_minutes INTEGER NOT NULL CHECK(study_minutes >= 0), self_rating INTEGER NOT NULL CHECK(self_rating BETWEEN 1 AND 5), improvement TEXT NOT NULL, tomorrow_plan TEXT NOT NULL, recorded_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS curriculum_previews(token TEXT PRIMARY KEY, course_id INTEGER NOT NULL REFERENCES courses(id), items_json TEXT NOT NULL, created_at INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS curriculum_url_previews(token TEXT PRIMARY KEY, course_url TEXT NOT NULL, course_name TEXT NOT NULL, items_json TEXT NOT NULL, created_at INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS course_archives(id INTEGER PRIMARY KEY, archived_at TEXT NOT NULL, original_course_id INTEGER NOT NULL, course_name TEXT NOT NULL, course_url TEXT NOT NULL, preserved_categories TEXT NOT NULL, records_json TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS course_delete_previews(token TEXT PRIMARY KEY, course_id INTEGER NOT NULL, details_json TEXT NOT NULL, created_at INTEGER NOT NULL);
         ''')
         columns = {row['name'] for row in c.execute('PRAGMA table_info(courses)')}
         if 'course_url' not in columns:
@@ -115,7 +117,70 @@ def init():
 
 def snapshot():
     with connect() as c:
-        return {name: [dict(r) for r in c.execute('SELECT * FROM ' + name + ' ORDER BY id')] for name in ('courses', 'course_sections', 'lectures', 'reflections', 'course_ratings', 'study_plans', 'daily_reflections')}
+        return {name: [dict(r) for r in c.execute('SELECT * FROM ' + name + ' ORDER BY id')] for name in ('courses', 'course_sections', 'lectures', 'reflections', 'course_ratings', 'study_plans', 'daily_reflections', 'course_archives')}
+
+
+def course_deletion_details(connection, course_id):
+    course = connection.execute('SELECT * FROM courses WHERE id=?', (course_id,)).fetchone()
+    if not course:
+        raise ValueError('講座が見つかりません')
+    sections = [
+        dict(row) for row in connection.execute(
+            'SELECT id,title,position FROM course_sections WHERE course_id=? ORDER BY position,id',
+            (course_id,),
+        )
+    ]
+    lectures = [
+        dict(row) for row in connection.execute(
+            '''SELECT l.id,l.title,l.position,l.watched,l.section_id,s.title AS section_title,
+                      (SELECT COUNT(*) FROM reflections r WHERE r.lecture_id=l.id) AS reflection_count,
+                      (SELECT COUNT(*) FROM study_plans p WHERE p.lecture_id=l.id) AS plan_count
+               FROM lectures l LEFT JOIN course_sections s ON s.id=l.section_id
+               WHERE l.course_id=? ORDER BY l.position,l.id''',
+            (course_id,),
+        )
+    ]
+    reflections = [
+        dict(row) for row in connection.execute(
+            '''SELECT r.*,l.title AS lecture_title
+               FROM reflections r JOIN lectures l ON l.id=r.lecture_id
+               WHERE l.course_id=? ORDER BY r.recorded_at,r.id''',
+            (course_id,),
+        )
+    ]
+    ratings = [
+        dict(row) for row in connection.execute(
+            'SELECT * FROM course_ratings WHERE course_id=? ORDER BY recorded_at,id',
+            (course_id,),
+        )
+    ]
+    plans = [
+        dict(row) for row in connection.execute(
+            '''SELECT p.*,l.title AS lecture_title
+               FROM study_plans p JOIN lectures l ON l.id=p.lecture_id
+               WHERE l.course_id=? ORDER BY p.plan_date,p.id''',
+            (course_id,),
+        )
+    ]
+    plan_dates = sorted({plan['plan_date'] for plan in plans})
+    daily_reflections = []
+    if plan_dates:
+        placeholders = ','.join('?' for _ in plan_dates)
+        daily_reflections = [
+            dict(row) for row in connection.execute(
+                'SELECT id,reflection_date,recorded_at FROM daily_reflections WHERE reflection_date IN (' + placeholders + ') ORDER BY reflection_date,recorded_at,id',
+                plan_dates,
+            )
+        ]
+    return {
+        'course': dict(course),
+        'sections': sections,
+        'lectures': lectures,
+        'reflections': reflections,
+        'course_ratings': ratings,
+        'study_plans': plans,
+        'daily_reflections': daily_reflections,
+    }
 
 
 def required(data, key):
@@ -455,6 +520,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split('?')[0]
+        if path == '/api/course-delete-preview':
+            try:
+                query = parse_qs(urlsplit(self.path).query)
+                course_id = int(query.get('course_id', [''])[0])
+                with connect() as c:
+                    details = course_deletion_details(c, course_id)
+                    token = secrets.token_urlsafe(32)
+                    c.execute('DELETE FROM course_delete_previews WHERE created_at < ?', (int(time.time()) - 1800,))
+                    c.execute(
+                        'INSERT INTO course_delete_previews(token,course_id,details_json,created_at) VALUES (?,?,?,?)',
+                        (token, course_id, json.dumps(details, ensure_ascii=False, sort_keys=True), int(time.time())),
+                    )
+                    return self.reply(200, {'preview_token': token, **details})
+            except (ValueError, TypeError) as error:
+                return self.reply(400, {'error': str(error)})
         if path == '/api/state':
             return self.reply(200, snapshot())
         if path == '/api/export.json':
@@ -528,6 +608,68 @@ class Handler(BaseHTTPRequestHandler):
                     if course_url:
                         course_url = normalize_udemy_course_url(course_url)
                     insert_course(c, required(d, 'name'), course_url)
+                elif self.path == '/api/courses/delete':
+                    token = required(d, 'preview_token')
+                    requested_categories = d.get('delete_categories')
+                    if not isinstance(requested_categories, list) or any(not isinstance(category, str) for category in requested_categories):
+                        raise ValueError('削除対象の指定が不正です')
+                    delete_categories = set(requested_categories)
+                    allowed_categories = {'sections_lectures', 'reflections', 'course_ratings', 'study_plans'}
+                    if not delete_categories <= allowed_categories:
+                        raise ValueError('削除対象に不正な項目が含まれています')
+                    c.execute('BEGIN IMMEDIATE')
+                    preview = c.execute(
+                        'SELECT course_id,details_json,created_at FROM course_delete_previews WHERE token=?',
+                        (token,),
+                    ).fetchone()
+                    if not preview or preview['created_at'] < int(time.time()) - 1800:
+                        raise ValueError('削除確認の有効期限が切れています。内容を再確認してください。')
+                    course_id = preview['course_id']
+                    details = course_deletion_details(c, course_id)
+                    if json.dumps(details, ensure_ascii=False, sort_keys=True) != preview['details_json']:
+                        raise ValueError('講座の関連データがプレビュー後に変更されました。最新の内容を再確認してください。')
+                    course = details['course']
+                    retained = {}
+                    if 'sections_lectures' not in delete_categories:
+                        retained['sections'] = details['sections']
+                        retained['lectures'] = details['lectures']
+                    if 'reflections' not in delete_categories:
+                        retained['reflections'] = details['reflections']
+                    if 'course_ratings' not in delete_categories:
+                        retained['course_ratings'] = details['course_ratings']
+                    if 'study_plans' not in delete_categories:
+                        retained['study_plans'] = details['study_plans']
+                    preserved_categories = [key for key, records in retained.items() if records]
+                    if preserved_categories:
+                        c.execute(
+                            '''INSERT INTO course_archives
+                               (archived_at,original_course_id,course_name,course_url,preserved_categories,records_json)
+                               VALUES (?,?,?,?,?,?)''',
+                            (
+                                datetime.now(timezone.utc).isoformat(),
+                                course['id'],
+                                course['name'],
+                                course['course_url'],
+                                json.dumps(preserved_categories, ensure_ascii=False),
+                                json.dumps({key: retained[key] for key in preserved_categories}, ensure_ascii=False),
+                            ),
+                        )
+                    lecture_ids = [lecture['id'] for lecture in details['lectures']]
+                    if lecture_ids:
+                        placeholders = ','.join('?' for _ in lecture_ids)
+                        c.execute('DELETE FROM reflections WHERE lecture_id IN (' + placeholders + ')', lecture_ids)
+                        c.execute('DELETE FROM study_plans WHERE lecture_id IN (' + placeholders + ')', lecture_ids)
+                    c.execute('DELETE FROM course_ratings WHERE course_id=?', (course_id,))
+                    c.execute('DELETE FROM lectures WHERE course_id=?', (course_id,))
+                    c.execute('DELETE FROM course_sections WHERE course_id=?', (course_id,))
+                    c.execute('DELETE FROM courses WHERE id=?', (course_id,))
+                    c.execute('DELETE FROM course_delete_previews WHERE course_id=?', (course_id,))
+                    return self.reply(200, {
+                        'ok': True,
+                        'course_name': course['name'],
+                        'archived_categories': preserved_categories,
+                        'daily_reflections_preserved': len(details['daily_reflections']),
+                    })
                 elif self.path == '/api/lectures':
                     course_id = int(d['course_id'])
                     section_id = None

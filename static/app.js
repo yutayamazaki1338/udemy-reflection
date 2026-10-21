@@ -51,9 +51,16 @@ function renderLearning() {
  const courses = $('#courses');
  courses.replaceChildren();
  state.courses.forEach(c => {
+  const row = el('div', undefined, 'course-row');
   const b = el('button', c.name, c.id === courseId ? 'selected' : 'course');
+  b.type = 'button';
   b.onclick = () => { courseId = c.id; lectureId = null; curriculumPreview = null; render(); };
-  courses.append(b);
+  const remove = el('button', '削除', 'delete-course');
+  remove.type = 'button';
+  remove.setAttribute('aria-label', `${c.name}を削除`);
+  remove.onclick = () => openCourseDeletion(c.id);
+  row.append(b, remove);
+  courses.append(row);
  });
  $('#lecture-form button').disabled = courseId === null;
  const lectures = state.lectures.filter(l => l.course_id === courseId);
@@ -119,6 +126,105 @@ function renderLearning() {
   });
   if (!refs.length) history.append(el('p', '最初の気づきを残しましょう。', 'muted'));
  }
+}
+function appendDeletionTargets(parent, label, records, getText) {
+ const details = el('details');
+ const summary = el('summary', `${label}の対象 (${records.length}件)`);
+ details.append(summary);
+ if (records.length) {
+  const list = el('ul');
+  records.forEach(record => list.append(el('li', getText(record))));
+  details.append(list);
+ } else {
+  details.append(el('p', '対象はありません。', 'muted'));
+ }
+ parent.append(details);
+}
+async function openCourseDeletion(courseIdToDelete) {
+ let details;
+ try {
+  details = await api(`/api/course-delete-preview?course_id=${encodeURIComponent(courseIdToDelete)}`);
+ } catch (error) {
+  message(error.message, true);
+  return;
+ }
+ const backdrop = el('div', undefined, 'modal-backdrop');
+ backdrop.setAttribute('role', 'presentation');
+ const dialog = el('section', undefined, 'delete-dialog');
+ dialog.setAttribute('role', 'dialog');
+ dialog.setAttribute('aria-modal', 'true');
+ dialog.setAttribute('aria-labelledby', 'delete-dialog-title');
+ dialog.append(el('h2', `講座「${details.course.name}」の削除内容を確認`));
+ dialog.querySelector('h2').id = 'delete-dialog-title';
+ dialog.append(el('p', '講座レコードは削除されます。各カテゴリのチェックを外した記録は、削除後もアーカイブに保持されます。'));
+ appendDeletionTargets(dialog, 'セクション', details.sections, section => section.title);
+ appendDeletionTargets(dialog, '単元・セクション情報', details.lectures, lecture => `${lecture.section_title ? lecture.section_title + ' / ' : ''}${lecture.title}${lecture.watched ? '（視聴済み）' : ''}（振り返り ${lecture.reflection_count}件・計画 ${lecture.plan_count}件）`);
+ appendDeletionTargets(dialog, '単元の振り返り', details.reflections, reflection => `${reflection.lecture_title} · ${new Date(reflection.recorded_at).toLocaleString('ja-JP')}`);
+ appendDeletionTargets(dialog, '講座評価', details.course_ratings, rating => `${new Date(rating.recorded_at).toLocaleString('ja-JP')} · 理解度 ${rating.understanding}/5・講師とのマッチ度 ${rating.instructor_match}/5`);
+ appendDeletionTargets(dialog, '学習計画', details.study_plans, plan => `${plan.plan_date} · ${plan.lecture_title}`);
+ const groups = [
+  ['sections_lectures', '単元・セクション情報', details.lectures.length + details.sections.length],
+  ['reflections', '単元の振り返り', details.reflections.length],
+  ['course_ratings', '講座評価', details.course_ratings.length],
+  ['study_plans', '学習計画', details.study_plans.length],
+ ];
+ const choices = el('fieldset', undefined, 'delete-categories');
+ choices.append(el('legend', '完全に削除するデータを選択（未選択分はアーカイブ）'));
+ groups.forEach(([key, label, count]) => {
+  const choice = el('label', undefined, 'delete-choice');
+  const checkbox = el('input');
+  checkbox.type = 'checkbox';
+  checkbox.checked = true;
+  checkbox.value = key;
+  checkbox.setAttribute('aria-label', `${label} ${count}件を削除`);
+  choice.append(checkbox, el('span', `${label} (${count}件)`));
+  choices.append(choice);
+ });
+ dialog.append(choices);
+ dialog.append(el('p', `計画日と同日に記録された日次振り返りは講座に直接結び付いていないため、削除対象にせず保持します（${details.daily_reflections.length}件）。` , 'muted'));
+ dialog.append(el('p', 'アーカイブしたデータは全データJSONのダウンロードに含まれます。', 'muted'));
+ const actions = el('div', undefined, 'delete-actions');
+ const cancel = el('button', 'キャンセル');
+ cancel.type = 'button';
+ cancel.onclick = () => backdrop.remove();
+ const confirmDelete = el('button', '選択したデータで講座を削除', 'danger');
+ confirmDelete.type = 'button';
+ confirmDelete.onclick = async () => {
+  const selected = [...choices.querySelectorAll('input:checked')].map(input => input.value);
+  const selectedLabels = groups.filter(([key]) => selected.includes(key)).map(([, label, count]) => `${label} ${count}件`);
+  const archivedLabels = groups.filter(([key]) => !selected.includes(key)).map(([, label, count]) => `${label} ${count}件`);
+  const summary = [
+   `講座「${details.course.name}」を削除します。`,
+   `完全削除: ${selectedLabels.join('、') || '該当なし'}`,
+   `アーカイブ保持: ${archivedLabels.join('、') || '該当なし'}`,
+   `日次振り返り ${details.daily_reflections.length}件は保持`,
+   'この操作を続けますか？',
+  ].join('\n');
+  if (!window.confirm(summary)) return;
+  confirmDelete.disabled = true;
+  try {
+   const result = await api('/api/courses/delete', {preview_token: details.preview_token, delete_categories: selected});
+   backdrop.remove();
+   if (courseId === courseIdToDelete) {
+    courseId = null;
+    lectureId = null;
+   }
+   await refresh();
+   const archiveLabels = {sections: 'セクション', lectures: '単元', reflections: '単元の振り返り', course_ratings: '講座評価', study_plans: '学習計画'};
+   const archivedNames = result.archived_categories.map(category => archiveLabels[category] || category);
+   const archived = archivedNames.length ? `未選択データはアーカイブに保持しました（${archivedNames.join('、')}）。` : 'アーカイブ対象はありません。';
+   message(`講座「${result.course_name}」を削除しました。${archived}日次振り返りは保持しています。`);
+  } catch (error) {
+   confirmDelete.disabled = false;
+   message(error.message, true);
+  }
+ };
+ actions.append(cancel, confirmDelete);
+ dialog.append(actions);
+ backdrop.append(dialog);
+ backdrop.onclick = event => { if (event.target === backdrop) backdrop.remove(); };
+ document.body.append(backdrop);
+ cancel.focus();
 }
 function renderCurriculumImport() {
  const input = $('#curriculum-url');

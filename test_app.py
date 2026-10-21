@@ -476,6 +476,120 @@ class ApiFeatureTests(unittest.TestCase):
         self.assertEqual(len(state['courses']), 1)
         self.assertEqual(state['lectures'], [])
 
+    def test_course_delete_preview_lists_related_targets_and_shared_daily_records(self):
+        self.assertEqual(self.request_json('/api/courses', {'name': '削除対象講座'})[0], 200)
+        self.assertEqual(self.request_json('/api/lectures', {
+            'course_id': 1,
+            'title': '削除対象単元',
+            'section_name': '第1章',
+        })[0], 200)
+        self.assertEqual(self.request_json('/api/plans', {
+            'plan_date': '2026-10-21',
+            'lecture_id': 1,
+        })[0], 200)
+        self.assertEqual(self.request_json('/api/daily-reflections', {
+            'reflection_date': '2026-10-21',
+            'plan_completed': True,
+            'study_minutes': 30,
+            'self_rating': 4,
+            'improvement': '改善点',
+            'tomorrow_plan': '明日の計画',
+            'recorded_at': '2026-10-21T09:00:00+09:00',
+        })[0], 200)
+        status, preview = self.request_json('/api/course-delete-preview?course_id=1')
+        self.assertEqual(status, 200)
+        self.assertEqual(preview['course']['name'], '削除対象講座')
+        self.assertEqual(preview['sections'][0]['title'], '第1章')
+        self.assertEqual(preview['lectures'][0]['title'], '削除対象単元')
+        self.assertEqual(preview['study_plans'][0]['plan_date'], '2026-10-21')
+        self.assertEqual(len(preview['daily_reflections']), 1)
+
+    def test_course_delete_archives_unselected_data_and_preserves_daily_reflections(self):
+        self.assertEqual(self.request_json('/api/courses', {'name': '講座削除'})[0], 200)
+        self.assertEqual(self.request_json('/api/lectures', {
+            'course_id': 1,
+            'title': '単元',
+            'section_name': '章',
+        })[0], 200)
+        self.assertEqual(self.request_json('/api/reflections', {
+            'lecture_id': 1,
+            'understood': '理解したこと',
+            'unclear': '',
+            'satisfaction': 4,
+            'reason': '理由',
+            'understanding': 4,
+            'recorded_at': '2026-10-21T09:00:00+09:00',
+            'notes': '',
+        })[0], 200)
+        self.assertEqual(self.request_json('/api/course-ratings', {
+            'course_id': 1,
+            'understanding': 4,
+            'understanding_reason': '理解理由',
+            'instructor_match': 3,
+            'instructor_match_reason': '講師理由',
+            'recorded_at': '2026-10-21T09:00:00+09:00',
+        })[0], 200)
+        self.assertEqual(self.request_json('/api/plans', {'plan_date': '2026-10-21', 'lecture_id': 1})[0], 200)
+        self.assertEqual(self.request_json('/api/daily-reflections', {
+            'reflection_date': '2026-10-21',
+            'plan_completed': True,
+            'study_minutes': 30,
+            'self_rating': 4,
+            'improvement': '改善点',
+            'tomorrow_plan': '明日の計画',
+            'recorded_at': '2026-10-21T09:00:00+09:00',
+        })[0], 200)
+
+        status, deletion_preview = self.request_json('/api/course-delete-preview?course_id=1')
+        self.assertEqual(status, 200)
+        status, deleted = self.request_json('/api/courses/delete', {
+            'preview_token': deletion_preview['preview_token'],
+            'delete_categories': ['reflections', 'course_ratings'],
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(deleted['archived_categories'], ['sections', 'lectures', 'study_plans'])
+        state = self.request_json('/api/state')[1]
+        self.assertEqual(state['courses'], [])
+        self.assertEqual(state['course_sections'], [])
+        self.assertEqual(state['lectures'], [])
+        self.assertEqual(state['reflections'], [])
+        self.assertEqual(state['course_ratings'], [])
+        self.assertEqual(state['study_plans'], [])
+        self.assertEqual(len(state['daily_reflections']), 1)
+        self.assertEqual(len(state['course_archives']), 1)
+        archive = state['course_archives'][0]
+        self.assertEqual(archive['course_name'], '講座削除')
+        self.assertEqual(json.loads(archive['preserved_categories']), ['sections', 'lectures', 'study_plans'])
+        archived_data = json.loads(archive['records_json'])
+        self.assertEqual(archived_data['lectures'][0]['title'], '単元')
+        self.assertEqual(archived_data['study_plans'][0]['lecture_title'], '単元')
+        full_export = self.request_json('/api/export.json')[1]
+        self.assertEqual(full_export['course_archives'], state['course_archives'])
+
+    def test_course_delete_rejects_unknown_categories_without_deleting(self):
+        self.assertEqual(self.request_json('/api/courses', {'name': '保護講座'})[0], 200)
+        _, preview = self.request_json('/api/course-delete-preview?course_id=1')
+        status, error = self.request_json('/api/courses/delete', {
+            'preview_token': preview['preview_token'],
+            'delete_categories': ['unknown'],
+        })
+        self.assertEqual(status, 400)
+        self.assertIn('不正な項目', error['error'])
+        self.assertEqual(len(self.request_json('/api/state')[1]['courses']), 1)
+
+    def test_course_delete_requires_fresh_preview_of_exact_related_records(self):
+        self.assertEqual(self.request_json('/api/courses', {'name': '変更確認講座'})[0], 200)
+        _, preview = self.request_json('/api/course-delete-preview?course_id=1')
+        self.assertEqual(self.request_json('/api/lectures', {'course_id': 1, 'title': '後から追加'})[0], 200)
+        status, error = self.request_json('/api/courses/delete', {
+            'preview_token': preview['preview_token'],
+            'delete_categories': ['sections_lectures', 'reflections', 'course_ratings', 'study_plans'],
+        })
+        self.assertEqual(status, 400)
+        self.assertIn('プレビュー後に変更されました', error['error'])
+        self.assertEqual(len(self.request_json('/api/state')[1]['courses']), 1)
+        self.assertEqual(len(self.request_json('/api/state')[1]['lectures']), 1)
+
     def test_preview_uses_course_slug_when_page_title_is_missing(self):
         fixture = FIXTURE_PATH.read_text(encoding='utf-8').replace(
             '<head><meta property="og:title" content="Linux Basics | Udemy"></head>',
