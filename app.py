@@ -16,6 +16,7 @@ import socket
 import ssl
 import threading
 import time
+import unicodedata
 from html.parser import HTMLParser
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -48,7 +49,7 @@ def init():
     DB.parent.mkdir(parents=True, exist_ok=True)
     with connect() as c:
         c.executescript('''
-        CREATE TABLE IF NOT EXISTS courses(id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS courses(id INTEGER PRIMARY KEY, name TEXT NOT NULL, name_key TEXT);
         CREATE TABLE IF NOT EXISTS lectures(id INTEGER PRIMARY KEY, course_id INTEGER NOT NULL REFERENCES courses(id), title TEXT NOT NULL, watched INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS reflections(id INTEGER PRIMARY KEY, lecture_id INTEGER NOT NULL REFERENCES lectures(id), understood TEXT NOT NULL, unclear TEXT NOT NULL, satisfaction INTEGER NOT NULL CHECK(satisfaction BETWEEN 1 AND 5), reason TEXT NOT NULL, understanding INTEGER NOT NULL CHECK(understanding BETWEEN 1 AND 5), recorded_at TEXT NOT NULL, notes TEXT NOT NULL);
         ''')
@@ -63,6 +64,45 @@ def init():
         columns = {row['name'] for row in c.execute('PRAGMA table_info(courses)')}
         if 'course_url' not in columns:
             c.execute("ALTER TABLE courses ADD COLUMN course_url TEXT NOT NULL DEFAULT ''")
+        if 'name_key' not in columns:
+            c.execute('ALTER TABLE courses ADD COLUMN name_key TEXT')
+        course_names = c.execute('SELECT id,name FROM courses ORDER BY id').fetchall()
+        normalized_names = {}
+        for course in course_names:
+            key = normalize_course_name(course['name'])[1]
+            if key:
+                normalized_names[course['id']] = key
+        c.execute('DROP TRIGGER IF EXISTS courses_unique_name_key_update')
+        c.execute('UPDATE courses SET name_key=NULL')
+        c.executemany(
+            'UPDATE courses SET name_key=? WHERE id=?',
+            ((key, course_id) for course_id, key in normalized_names.items()),
+        )
+        c.execute('DROP INDEX IF EXISTS courses_name_key_unique')
+        c.execute('CREATE INDEX IF NOT EXISTS courses_name_key_lookup ON courses(name_key)')
+        c.executescript('''
+        DROP TRIGGER IF EXISTS courses_require_name_key;
+        CREATE TRIGGER IF NOT EXISTS courses_require_name_key
+        BEFORE INSERT ON courses
+        WHEN NEW.name_key IS NULL OR NEW.name_key = ''
+        BEGIN
+            SELECT RAISE(ABORT, 'course name key is required');
+        END;
+        DROP TRIGGER IF EXISTS courses_unique_name_key_insert;
+        CREATE TRIGGER courses_unique_name_key_insert
+        BEFORE INSERT ON courses
+        WHEN EXISTS (SELECT 1 FROM courses WHERE name_key = NEW.name_key)
+        BEGIN
+            SELECT RAISE(ABORT, 'course name already exists');
+        END;
+        DROP TRIGGER IF EXISTS courses_unique_name_key_update;
+        CREATE TRIGGER courses_unique_name_key_update
+        BEFORE UPDATE OF name_key ON courses
+        WHEN EXISTS (SELECT 1 FROM courses WHERE name_key = NEW.name_key AND id != OLD.id)
+        BEGIN
+            SELECT RAISE(ABORT, 'course name already exists');
+        END;
+        ''')
         lecture_columns = {row['name'] for row in c.execute('PRAGMA table_info(lectures)')}
         for name, sql_type in (
             ('section_id', 'INTEGER REFERENCES course_sections(id)'),
@@ -83,6 +123,34 @@ def required(data, key):
     if not isinstance(value, str) or not value.strip():
         raise ValueError(key + ' を入力してください')
     return value.strip()
+
+
+def normalize_course_name(value):
+    display_name = ' '.join(unicodedata.normalize('NFKC', value).split())
+    return display_name, display_name.casefold()
+
+
+def find_course_by_name(connection, name, exclude_id=None):
+    _, name_key = normalize_course_name(name)
+    for course in connection.execute('SELECT id,name FROM courses ORDER BY id'):
+        if course['id'] != exclude_id and normalize_course_name(course['name'])[1] == name_key:
+            return course
+    return None
+
+
+def insert_course(connection, name, course_url=''):
+    display_name, name_key = normalize_course_name(required({'name': name}, 'name'))
+    if find_course_by_name(connection, display_name):
+        raise ValueError('同じ講座名がすでに登録されています。既存の講座を選択してください。')
+    try:
+        return connection.execute(
+            'INSERT INTO courses(name,name_key,course_url) VALUES (?,?,?)',
+            (display_name, name_key, course_url),
+        ).lastrowid
+    except sqlite3.IntegrityError as error:
+        if 'course name already exists' in str(error):
+            raise ValueError('同じ講座名がすでに登録されています。既存の講座を選択してください。')
+        raise
 
 
 def parse_recorded_at(value):
@@ -459,7 +527,7 @@ class Handler(BaseHTTPRequestHandler):
                     course_url = course_url.strip()
                     if course_url:
                         course_url = normalize_udemy_course_url(course_url)
-                    c.execute('INSERT INTO courses(name,course_url) VALUES (?,?)', (required(d, 'name'), course_url))
+                    insert_course(c, required(d, 'name'), course_url)
                 elif self.path == '/api/lectures':
                     course_id = int(d['course_id'])
                     section_id = None
@@ -530,6 +598,9 @@ class Handler(BaseHTTPRequestHandler):
                     course_name = curriculum['course_name'] or re.sub(r'[-_]+', ' ', urlsplit(canonical_url).path.split('/')[-2]).strip().title()
                     if not course_name:
                         raise ValueError('講座名をURLから特定できませんでした')
+                    existing_course = find_course_by_udemy_url(c, canonical_url)
+                    if not existing_course and find_course_by_name(c, course_name):
+                        raise ValueError('同じ講座名がすでに登録されています。URL取込では既存講座を選択できないため、講座名を確認してください。')
                     token = secrets.token_urlsafe(32)
                     c.execute('DELETE FROM curriculum_url_previews WHERE created_at < ?', (int(time.time()) - 3600,))
                     c.execute(
@@ -559,10 +630,7 @@ class Handler(BaseHTTPRequestHandler):
                     if course:
                         course_id = course['id']
                     else:
-                        course_id = c.execute(
-                            'INSERT INTO courses(name,course_url) VALUES (?,?)',
-                            (preview['course_name'], preview['course_url']),
-                        ).lastrowid
+                        course_id = insert_course(c, preview['course_name'], preview['course_url'])
                     position = c.execute(
                         'SELECT COALESCE(MAX(position), 0) FROM lectures WHERE course_id=?',
                         (course_id,),
@@ -596,11 +664,11 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         course_name = required(d, 'course_name')
                         lecture_title = required(d, 'lecture_title')
-                        course = c.execute('SELECT id FROM courses WHERE name=? ORDER BY id LIMIT 1', (course_name,)).fetchone()
+                        course = find_course_by_name(c, course_name)
                         if course:
                             course_id = course['id']
                         else:
-                            course_id = c.execute('INSERT INTO courses(name) VALUES (?)', (course_name,)).lastrowid
+                            course_id = insert_course(c, course_name)
                         lecture = c.execute('SELECT id FROM lectures WHERE course_id=? AND title=? ORDER BY id LIMIT 1', (course_id, lecture_title)).fetchone()
                         if lecture:
                             lecture_id = lecture['id']

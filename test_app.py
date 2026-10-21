@@ -298,8 +298,38 @@ class ApiFeatureTests(unittest.TestCase):
         self.assertEqual(state['study_plans'], [])
         self.assertEqual(state['daily_reflections'], [])
         self.assertEqual(state['courses'][0]['course_url'], '')
+        self.assertEqual(state['courses'][0]['name_key'], '既存講座')
         self.assertIsNone(state['lectures'][0]['section_id'])
         self.assertIsNone(state['lectures'][0]['duration_seconds'])
+
+    def test_duplicate_course_names_are_rejected_after_unicode_and_whitespace_normalization(self):
+        status, _ = self.request_json('/api/courses', {'name': '  Ｐｙｔｈｏｎ   基礎講座  '})
+        self.assertEqual(status, 200)
+        status, error = self.request_json('/api/courses', {'name': 'python 基礎講座'})
+        self.assertEqual(status, 400)
+        self.assertIn('同じ講座名がすでに登録されています', error['error'])
+        state = self.request_json('/api/state')[1]
+        self.assertEqual(len(state['courses']), 1)
+        self.assertEqual(state['courses'][0]['name'], 'Python 基礎講座')
+        with app.connect() as connection, self.assertRaises(sqlite3.IntegrityError):
+            connection.execute("INSERT INTO courses(name,course_url) VALUES ('Another', '')")
+
+    def test_legacy_duplicate_course_names_are_preserved_and_new_duplicates_blocked(self):
+        legacy_db = Path(self.temp_dir.name) / 'legacy-duplicates.sqlite3'
+        with sqlite3.connect(legacy_db) as connection:
+            connection.executescript('''
+            CREATE TABLE courses(id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+            INSERT INTO courses(name) VALUES ('Existing Course'), (' existing   course ');
+            ''')
+        with patch.object(app, 'DB', legacy_db):
+            app.init()
+            app.init()
+            with app.connect() as connection:
+                rows = connection.execute('SELECT id,name,name_key FROM courses ORDER BY id').fetchall()
+                self.assertEqual(len(rows), 2)
+                self.assertEqual([row['name_key'] for row in rows], ['existing course', 'existing course'])
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute("INSERT INTO courses(name,name_key,course_url) VALUES ('New','existing course','')")
 
     def test_pages_and_page_specific_downloads_are_served(self):
         for path, page_title in (
@@ -434,6 +464,17 @@ class ApiFeatureTests(unittest.TestCase):
         self.assertEqual(repeat_result['lectures_added'], 0)
         self.assertEqual(len(self.request_json('/api/state')[1]['courses']), 1)
         self.assertEqual(len(self.request_json('/api/state')[1]['lectures']), 3)
+
+    def test_url_import_rejects_course_name_conflict_before_registration(self):
+        self.assertEqual(self.request_json('/api/courses', {'name': 'Linux Basics'})[0], 200)
+        fixture = FIXTURE_PATH.read_text(encoding='utf-8')
+        with patch.object(app, 'fetch_udemy_course_html', return_value=fixture):
+            status, error = self.request_json('/api/course-curriculum/preview', {'url': 'https://www.udemy.com/course/example/'})
+        self.assertEqual(status, 400)
+        self.assertIn('同じ講座名がすでに登録されています', error['error'])
+        state = self.request_json('/api/state')[1]
+        self.assertEqual(len(state['courses']), 1)
+        self.assertEqual(state['lectures'], [])
 
     def test_preview_uses_course_slug_when_page_title_is_missing(self):
         fixture = FIXTURE_PATH.read_text(encoding='utf-8').replace(
