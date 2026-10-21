@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>学習計画 · MetaWatch（メタウォッチ）</title><meta name="description" content="動画学習の理解と振り返りを記録するツール"><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="stylesheet" href="/style.css"></head>
+<body data-page="planning"><header class="site-header"><div class="site-identity"><a class="brand" href="/" aria-label="MetaWatch メインページ"><img class="brand-mark" src="/brand-mark.svg" alt=""><img class="brand-wordmark" src="/brand-wordmark.svg" alt="MetaWatch"></a><h1>学習計画</h1><p>「観た」を「学んだ」に変える。動画学習の理解と振り返りを記録するツール。</p></div><nav aria-label="メインナビゲーション"><a href="/">メインページ</a><a class="active" aria-current="page" href="/planning">学習計画</a><a href="/learning">講座の学習記録</a></nav></header>
+<div id="message" role="status" aria-live="polite"></div>
+<main class="planning-page">
+ <section class="card">
+  <div class="page-heading"><div><h2 id="plan-heading">今日の学習計画</h2><label>対象日<input type="date" id="plan-date"></label></div><a class="download" href="/api/export/planning.json">計画・日次振り返りをJSON保存</a></div>
+  <div id="plan-prompt" class="prompt" role="status"></div>
+  <div id="plan-list"></div>
+  <form id="plan-form">
+   <h3>計画に単元を追加</h3>
+   <label>登録済みの講座<select id="plan-course"><option value="">講座を選択</option></select></label>
+   <label>登録済みの単元<select id="plan-lecture" name="lecture_id"><option value="">単元を選択</option></select></label>
+   <details><summary>未登録の講座・単元を入力</summary><p class="muted">保存すると講座と単元にも登録され、講座の学習記録ページから利用できます。</p>
+    <label>講座名<input name="course_name" maxlength="300" placeholder="例：新しい講座"></label>
+    <label>見る単元・内容<input name="lecture_title" maxlength="300" placeholder="例：第1章 / イントロダクション"></label>
+   </details>
+   <button>この日の計画に追加</button>
+  </form>
+ </section>
+ <section class="card">
+  <h2 id="daily-reflection-date">1日の学習を終了</h2>
+  <form id="daily-reflection-form">
+   <label>計画した講座・単元を消化できましたか？<select name="plan_completed"><option value="true">はい</option><option value="false">いいえ</option></select></label>
+   <label>実際の学習時間（分）<input type="number" name="study_minutes" required min="0" step="1" value="0"></label>
+   <label>今日の自己評価<select name="self_rating"><option value="1">1 / 低い</option><option value="2">2 / やや低い</option><option value="3" selected>3 / 普通</option><option value="4">4 / よくできた</option><option value="5">5 / とてもよくできた</option></select></label>
+   <label>改善点<textarea name="improvement" rows="2" required></textarea></label>
+   <label>明日の計画<textarea name="tomorrow_plan" rows="2" required></textarea></label>
+   <button>1日の振り返りを完了</button><p class="muted">完了するとメインページの直近4週間カレンダーに緑色で表示されます。再度記録すると履歴に追加されます。</p>
+  </form>
+  <h3>この日の振り返り履歴</h3><div id="daily-reflection-history"></div>
+ </section>
+</main><script src="/app.js"></script></body></html>

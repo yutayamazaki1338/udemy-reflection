@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>講座の学習記録 · MetaWatch（メタウォッチ）</title><meta name="description" content="動画学習の理解と振り返りを記録するツール"><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="stylesheet" href="/style.css"></head>
+<body data-page="learning"><header class="site-header"><div class="site-identity"><a class="brand" href="/" aria-label="MetaWatch メインページ"><img class="brand-mark" src="/brand-mark.svg" alt=""><img class="brand-wordmark" src="/brand-wordmark.svg" alt="MetaWatch"></a><h1>講座の学習記録</h1><p>「観た」を「学んだ」に変える。動画学習の理解と振り返りを記録するツール。</p></div><nav aria-label="メインナビゲーション"><a href="/">メインページ</a><a href="/planning">学習計画</a><a class="active" aria-current="page" href="/learning">講座の学習記録</a></nav></header>
+<div id="message" role="status" aria-live="polite"></div>
+<main class="learning-page">
+ <aside><h2>講座一覧</h2><div id="courses"></div></aside>
+ <section>
+  <div id="overview"></div>
+  <section class="card course-registration" aria-labelledby="registration-title">
+   <h2 id="registration-title">新しい講座を登録</h2>
+   <div class="registration-tabs" role="tablist" aria-label="講座の登録方法">
+    <button id="manual-course-tab" type="button" role="tab" aria-selected="true" aria-controls="manual-course-panel">手入力</button>
+    <button id="udemy-course-tab" type="button" role="tab" aria-selected="false" aria-controls="udemy-course-panel" tabindex="-1">Udemy URL</button>
+   </div>
+   <section id="manual-course-panel" role="tabpanel" aria-labelledby="manual-course-tab">
+    <form id="course-form"><label>講座名<input name="name" required placeholder="例：Python基礎講座" maxlength="300"></label><button>講座を登録</button></form>
+    <p class="muted">講座名を入力して登録します。単元は登録後に追加できます。</p>
+   </section>
+   <section id="udemy-course-panel" role="tabpanel" aria-labelledby="udemy-course-tab" hidden>
+    <p>公開カリキュラムをプレビューし、確認後に登録します。取得に失敗した場合は手入力へ切り替えられます。</p>
+    <label>Udemy講座URL<input id="curriculum-url" type="url" aria-describedby="curriculum-help" placeholder="https://www.udemy.com/course/..." maxlength="500"></label>
+    <button id="fetch-curriculum" type="button" disabled>プレビューを取得</button>
+    <p id="curriculum-help" class="muted">公開ページを匿名で1回だけ取得し、件数を照合します。登録ボタンを押すまで講座・単元データは変更されません。</p>
+    <div id="curriculum-preview"></div>
+   </section>
+  </section>
+  <div class="card"><div class="page-heading"><h2>講座全体の評価</h2><a class="download" href="/api/export/learning.json">講座・単元・振り返りをJSON保存</a></div><p class="muted">単元ごとの振り返りとは別に、この講座全体を評価します。再評価は履歴に追加されます。</p>
+   <form id="course-rating-form"><fieldset disabled id="course-rating-fields">
+    <label>記録日時<input type="datetime-local" name="recorded_at" required></label>
+    <div class="ratings">
+     <label>理解度<select name="understanding"><option value="1">1 / ほぼ不明</option><option value="2">2 / 一部理解</option><option value="3" selected>3 / 概要を理解</option><option value="4">4 / 説明できる</option><option value="5">5 / 応用できる</option></select></label>
+     <label>講師とのマッチ度<select name="instructor_match"><option value="1">1 / 合わない</option><option value="2">2 / やや合わない</option><option value="3" selected>3 / どちらともいえない</option><option value="4">4 / 合う</option><option value="5">5 / とても合う</option></select></label>
+    </div>
+    <label>理解度の評価理由<textarea name="understanding_reason" rows="2" required></textarea></label>
+    <label>講師とのマッチ度の評価理由<textarea name="instructor_match_reason" rows="2" required></textarea></label>
+    <button>講座全体の評価を保存</button><p class="muted">評価尺度はどちらも1〜5です。保存のたびに履歴が追加されます。</p>
+   </fieldset></form><h3>講座評価の履歴</h3><div id="course-rating-history"></div>
+  </div>
+  <div class="card"><h2>単元・レクチャー</h2><form id="lecture-form"><label>単元名<input name="title" required placeholder="例：関数の引数" maxlength="300"></label><button>単元を追加</button></form><label>表示<select id="filter"><option value="all">すべての単元</option><option value="unwatched">未視聴</option><option value="weak">理解度が低い・不明点あり</option><option value="unreflected">視聴済み・振り返り未記入</option></select></label><div id="lectures"></div></div>
+ </section>
+ <section class="card" id="journal"><div class="page-heading"><h2 id="journal-title">単元の振り返り</h2><a class="download" href="/api/export.csv">単元振り返りをCSV保存</a></div><p id="selection-hint">単元を選ぶと記録できます。</p><form id="reflection-form"><fieldset disabled id="reflection-fields"><label>記録日時<input type="datetime-local" name="recorded_at" required></label><label>理解したこと<textarea name="understood" rows="3" placeholder="自分の言葉で説明すると？"></textarea></label><label>不明点・次に確かめたいこと<textarea name="unclear" rows="3"></textarea></label><div class="ratings"><label>満足度<select name="satisfaction"><option value="1">1 / 不満</option><option value="2">2 / やや不満</option><option value="3" selected>3 / 普通</option><option value="4">4 / 満足</option><option value="5">5 / とても満足</option></select></label><label>理解度<select name="understanding"><option value="1">1 / ほぼ不明</option><option value="2">2 / 一部理解</option><option value="3" selected>3 / 概要を理解</option><option value="4">4 / 説明できる</option><option value="5">5 / 応用できる</option></select></label></div><label>その満足度にした理由<textarea name="reason" required rows="2"></textarea></label><label>自由記述（追加で自身で調べて理解したこと）<textarea name="notes" rows="2"></textarea></label><button>振り返りを保存</button><p class="muted">再記入すると履歴が追加され、理解の変化を追えます。</p></fieldset></form><h3>振り返りの履歴</h3><div id="history"></div></section>
+</main><script src="/app.js"></script></body></html>
