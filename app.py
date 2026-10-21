@@ -618,7 +618,7 @@ def main():
     args = parser.parse_args()
     init()
     server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
-    print('学習リフレクション: http://127.0.0.1:%s (終了: Ctrl+C)' % args.port, flush=True)
+    print('MetaWatch（メタウォッチ）: http://127.0.0.1:%s (終了: Ctrl+C)' % args.port, flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

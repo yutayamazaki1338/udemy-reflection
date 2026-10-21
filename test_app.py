@@ -275,7 +275,11 @@ class ApiFeatureTests(unittest.TestCase):
         ):
             with urlopen(self.base_url + path) as response:
                 self.assertEqual(response.status, 200)
-                self.assertIn(page_title, response.read().decode('utf-8'))
+                page = response.read().decode('utf-8')
+                self.assertIn(page_title, page)
+                self.assertIn('MetaWatch（メタウォッチ）', page)
+                self.assertIn('「観た」を「学んだ」に変える。', page)
+                self.assertIn('動画学習の理解と振り返りを記録するツール', page)
 
         for path, filename in (
             ('/api/export/planning.json', 'learning-plans.json'),
