@@ -6,3 +6,34 @@ main.single-page{display:block;max-width:980px;margin:0 auto}.planning-page{grid
 @media(max-width:680px){header{display:block;padding:25px 5%}nav{margin-top:20px;flex-wrap:wrap}h1{font-size:25px}main{display:block;padding:20px 5%}main>*,aside{margin-bottom:20px}#courses{display:flex;flex-wrap:wrap;gap:6px}#courses button{width:auto}.ratings{grid-template-columns:1fr}.page-heading{display:block}.page-heading .download{margin:0 0 16px}}
 .site-identity{min-width:0}.brand{display:inline-flex;align-items:center;gap:7px;height:44px;margin-bottom:2px;text-decoration:none}.brand-mark{display:block;width:42px;height:42px;flex:none}.brand-wordmark{display:block;width:166px;height:auto;max-height:36px;flex:none}.site-identity h1{margin:7px 0 8px}
 @media(max-width:680px){.brand{height:42px}.brand-mark{width:40px;height:40px}.brand-wordmark{width:154px;max-height:34px}}
+#courses .course-row{align-items:flex-start}
+#courses .course-row>button:first-child{display:block;flex:1 1 auto;width:auto;min-width:0;word-break:normal}
+#courses .course-row .delete-course{display:block;flex:0 0 auto;width:auto;min-width:0;margin-top:0}
+.site-header{padding:16px 4%;min-height:90px}
+.site-identity{display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:14px;align-items:center}
+.site-identity .brand{grid-column:1;grid-row:1 / span 2;margin:0}
+.site-identity h1{grid-column:2;grid-row:1;margin:0 0 4px;font-size:24px;line-height:1.2}
+.site-identity p{grid-column:2;grid-row:2;margin:0;font-size:13px;line-height:1.4}
+.site-header nav a{white-space:nowrap;padding:9px 11px}
+.registration-tabs{display:flex;gap:8px;border-bottom:1px solid #dce4db;margin:0 0 18px}
+.registration-tabs [role=tab]{background:transparent;color:#315b45;border-radius:8px 8px 0 0;border-bottom:3px solid transparent;padding:10px 14px}
+.registration-tabs [role=tab][aria-selected=true]{background:#eef3ed;color:#163e36;border-bottom-color:#52853c;font-weight:700}
+.registration-tabs [role=tab]:focus-visible{outline-offset:2px}
+[role=tabpanel][hidden]{display:none}
+.course-registration form{margin-bottom:10px}
+.course-registration>p,.course-registration [role=tabpanel]>p{margin-top:0}
+#overview h2{margin:0 0 14px;font-size:21px}
+.learning-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:0 0 14px}
+.learning-metric{display:flex;flex-direction:column;gap:4px;padding:12px 14px;background:#fff;border:1px solid #dce4db;border-radius:10px}
+.learning-metric span,.learning-metric small{color:#627969;font-size:12px;line-height:1.4}
+.learning-metric strong{font-size:22px;line-height:1.2;color:#243c38}
+#overview progress{margin:2px 0 8px}
+.review-shortcut,.next-lecture{margin:4px 8px 8px 0}
+.review-shortcut{background:#fff1cb;color:#674b10}
+.next-lecture{max-width:100%;background:#dceec9;color:#22472b;text-align:left;overflow-wrap:anywhere}
+#courses>p{margin:10px 0;color:#6c7c70;line-height:1.6}
+.site-header nav a:focus-visible,.registration-tabs [role=tab]:focus-visible{outline-offset:3px}
+#message:not(:empty){padding:10px 4%;margin:0;background:#e9f1e5;line-height:1.5}
+#message.error{background:#f7e9e6;color:#8b302a!important}
+@media(max-width:1000px){.site-header{display:block;padding:14px 4%}.site-header nav{margin-top:12px;flex-wrap:wrap}}
+@media(max-width:680px){.site-header{padding:14px 5%}.site-identity{column-gap:10px}.site-identity h1{font-size:20px}.site-identity p{font-size:12px}.site-header nav{gap:6px}.site-header nav a{padding:8px 9px;font-size:13px}.learning-metrics{grid-template-columns:repeat(auto-fit,minmax(120px,1fr))}.delete-actions{flex-wrap:wrap}.delete-actions button{flex:1 1 auto}}

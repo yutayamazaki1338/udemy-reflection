@@ -351,6 +351,8 @@ class ApiFeatureTests(unittest.TestCase):
                 self.assertIn('href="/">メインページ</a>', page)
                 self.assertIn('href="/planning">学習計画</a>', page)
                 self.assertIn('href="/learning">講座の学習記録</a>', page)
+                self.assertEqual(page.count('aria-current="page"'), 1)
+                self.assertIn('class="site-header"', page)
 
     def test_brand_assets_are_transparent_and_responsive_header_is_defined(self):
         for path, viewbox in (
@@ -368,6 +370,9 @@ class ApiFeatureTests(unittest.TestCase):
             stylesheet = response.read().decode('utf-8')
         self.assertIn('.brand-mark{display:block;width:42px;height:42px', stylesheet)
         self.assertIn('@media(max-width:680px){.brand{height:42px}.brand-mark{width:40px;height:40px}', stylesheet)
+        self.assertIn('#courses .course-row{align-items:flex-start}', stylesheet)
+        self.assertIn('#courses .course-row>button:first-child{display:block;flex:1 1 auto;width:auto;min-width:0;word-break:normal}', stylesheet)
+        self.assertIn('#courses .course-row .delete-course{display:block;flex:0 0 auto;width:auto;min-width:0;margin-top:0}', stylesheet)
 
         for path, filename in (
             ('/api/export/planning.json', 'learning-plans.json'),
@@ -647,6 +652,16 @@ class ApiFeatureTests(unittest.TestCase):
         with urlopen(self.base_url + '/learning') as response:
             page = response.read().decode('utf-8')
         manual_form = page.split('<form id="course-form">', 1)[1].split('</form>', 1)[0]
+        manual_panel = page.split('<section id="manual-course-panel"', 1)[1].split('</section>', 1)[0]
+        udemy_panel = page.split('<section id="udemy-course-panel"', 1)[1].split('</section>', 1)[0]
+        self.assertIn('新しい講座を登録', page)
+        self.assertIn('role="tablist"', page)
+        self.assertIn('role="tab" aria-selected="true"', page)
+        self.assertIn('aria-controls="manual-course-panel"', page)
+        self.assertIn('aria-controls="udemy-course-panel"', page)
+        self.assertIn('id="course-form"', manual_panel)
+        self.assertIn('id="curriculum-url"', udemy_panel)
+        self.assertIn('hidden', udemy_panel)
         self.assertIn('name="name"', manual_form)
         self.assertNotIn('course_url', manual_form)
         self.assertIn('id="curriculum-url"', page)
@@ -656,6 +671,9 @@ class ApiFeatureTests(unittest.TestCase):
         self.assertIn('\nfunction renderCurriculumImport() {', script)
         self.assertNotIn('\n  function renderCurriculumImport() {', script)
         self.assertIn('fetchButton.disabled = !input.value.trim() || curriculumLoading;', script)
+        self.assertIn('手入力に切り替えて登録できます。', script)
+        self.assertIn("selectCourseRegistrationMode('manual');", script)
+        self.assertIn("event.key === 'ArrowRight'", script)
 
     def test_course_deletion_ui_requires_explicit_selection_of_every_category(self):
         with urlopen(self.base_url + '/app.js') as response:

@@ -50,6 +50,7 @@ function render() {
 function renderLearning() {
  const courses = $('#courses');
  courses.replaceChildren();
+ if (!state.courses.length) courses.append(el('p', '講座はまだありません。「新しい講座を登録」から始めましょう。', 'muted'));
  state.courses.forEach(c => {
   const row = el('div', undefined, 'course-row');
   const b = el('button', c.name, c.id === courseId ? 'selected' : 'course');
@@ -65,20 +66,59 @@ function renderLearning() {
  $('#lecture-form button').disabled = courseId === null;
  const lectures = state.lectures.filter(l => l.course_id === courseId);
  const watched = lectures.filter(l => l.watched).length;
+ const course = state.courses.find(c => c.id === courseId);
  const overview = $('#overview');
  overview.replaceChildren();
- overview.append(el('h2', state.courses.find(c => c.id === courseId)?.name || 'まずは講座を登録しましょう'));
- overview.append(el('p', `視聴済み ${watched} / ${lectures.length} 単元 · 振り返り ${lectures.filter(l => latest(l.id)).length} 単元`));
- const progress = el('progress');
- progress.max = lectures.length || 1;
- progress.value = watched;
- progress.setAttribute('aria-label', '講座の視聴進捗');
- overview.append(progress);
+ overview.append(el('h2', course?.name || '講座の学習'));
+ if (course && lectures.length) {
+  const reviewed = lectures.map(lecture => latest(lecture.id)).filter(Boolean);
+  const metrics = el('div', undefined, 'learning-metrics');
+  const addMetric = (label, value, detail) => {
+   const item = el('div', undefined, 'learning-metric');
+   item.append(el('span', label), el('strong', value));
+   if (detail) item.append(el('small', detail));
+   metrics.append(item);
+  };
+  addMetric('視聴の進捗', `${watched} / ${lectures.length}`, '単元');
+  addMetric('振り返り', `${reviewed.length} / ${lectures.length}`, '記録した単元');
+  if (reviewed.length) {
+   const average = reviewed.reduce((sum, reflection) => sum + reflection.understanding, 0) / reviewed.length;
+   addMetric('最新の理解度平均', `${average.toFixed(1)} / 5`, `振り返り ${reviewed.length}件の最新評価 · 視聴進捗とは別`);
+  }
+  overview.append(metrics);
+  const progress = el('progress');
+  progress.max = lectures.length;
+  progress.value = watched;
+  progress.setAttribute('aria-label', `視聴の進捗: ${watched} / ${lectures.length}単元`);
+  overview.append(progress);
+  const progressNote = el('p', '視聴済みは再生チェック、理解度は振り返りの自己評価を表します。', 'muted');
+  overview.append(progressNote);
+ } else if (course) {
+  overview.append(el('p', '単元はまだありません。「講座登録」で単元を追加しましょう。', 'muted'));
+ }
  const weak = lectures.filter(l => {
   const r = latest(l.id);
   return r && (r.understanding <= 2 || r.unclear.trim());
  });
- overview.append(el('p', `見直し候補 ${weak.length} 単元（最新の理解度1〜2、または不明点あり）`, 'muted'));
+ if (weak.length) {
+  const reviewButton = el('button', `要見直し ${weak.length}単元`);
+  reviewButton.type = 'button';
+  reviewButton.className = 'review-shortcut';
+  reviewButton.onclick = () => { $('#filter').value = 'weak'; renderLearning(); };
+  overview.append(reviewButton);
+ }
+ const nextLecture = lectures.find(lecture => !lecture.watched);
+ if (nextLecture) {
+  const next = el('button', `次の単元: ${nextLecture.title}`, 'next-lecture');
+  next.type = 'button';
+  next.onclick = () => {
+   lectureId = nextLecture.id;
+   $('#filter').value = 'all';
+   renderLearning();
+   $('#journal').scrollIntoView({behavior: 'smooth', block: 'start'});
+  };
+  overview.append(next);
+ }
  renderCourseRatings();
  renderCurriculumImport();
 
@@ -106,7 +146,7 @@ function renderLearning() {
  if (!list.children.length) list.append(el('p', lectures.length ? 'この条件の単元はありません。' : '学習順に単元を追加してください。', 'muted'));
  const selected = state.lectures.find(l => l.id === lectureId);
  $('#reflection-fields').disabled = !selected;
- $('#journal-title').textContent = selected ? selected.title + ' / 振り返り' : '振り返り';
+ $('#journal-title').textContent = selected ? selected.title + ' / 振り返り' : '単元の振り返り';
  $('#selection-hint').hidden = !!selected;
  const history = $('#history');
  history.replaceChildren();
@@ -272,7 +312,8 @@ async function fetchCurriculumPreview() {
   message('公開カリキュラムを取得し、件数を照合しました。内容を確認してから登録できます。');
  } catch (error) {
   renderCurriculumImport();
-  message(error.message, true);
+  selectCourseRegistrationMode('manual');
+  message(`${error.message} 手入力に切り替えて登録できます。`, true);
  } finally {
   curriculumLoading = false;
   renderCurriculumImport();
@@ -355,6 +396,18 @@ function renderHeatmap() {
   grid.append(cell);
  }
 }
+function selectCourseRegistrationMode(mode, focus = false) {
+ const selectedTabId = mode === 'udemy' ? 'udemy-course-tab' : 'manual-course-tab';
+ const tabs = [...document.querySelectorAll('.registration-tabs [role=tab]')];
+ tabs.forEach(tab => {
+  const selected = tab.id === selectedTabId;
+  tab.setAttribute('aria-selected', String(selected));
+  tab.tabIndex = selected ? 0 : -1;
+  const panel = document.getElementById(tab.getAttribute('aria-controls'));
+  panel.hidden = !selected;
+  if (selected && focus) tab.focus();
+ });
+}
 function bindForm(selector, path, build, successMessage = '保存しました。') {
  const target = $(selector);
  if (!target) return;
@@ -388,4 +441,18 @@ if ($('#fetch-curriculum')) {
  $('#fetch-curriculum').onclick = fetchCurriculumPreview;
  $('#curriculum-url').oninput = () => { curriculumPreview = null; renderCurriculumImport(); };
 }
+document.querySelectorAll('.registration-tabs [role=tab]').forEach((tab, index, tabs) => {
+ tab.onclick = () => selectCourseRegistrationMode(tab.id === 'udemy-course-tab' ? 'udemy' : 'manual');
+ tab.onkeydown = event => {
+  const nextIndex = event.key === 'ArrowRight' ? (index + 1) % tabs.length :
+   event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length :
+   event.key === 'Home' ? 0 :
+   event.key === 'End' ? tabs.length - 1 : -1;
+  if (nextIndex >= 0) {
+   event.preventDefault();
+   selectCourseRegistrationMode(tabs[nextIndex].id === 'udemy-course-tab' ? 'udemy' : 'manual', true);
+  }
+ };
+});
+selectCourseRegistrationMode('manual');
 refresh().catch(e => message('読み込めませんでした: ' + e.message, true));
