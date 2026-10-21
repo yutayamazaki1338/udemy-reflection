@@ -1,9 +1,11 @@
 import json
+import io
 import socket
 import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import redirect_stderr
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -186,6 +188,12 @@ class ApiFeatureTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_patch = patch.object(app, 'DB', Path(self.temp_dir.name) / 'reflection.sqlite3')
         self.db_patch.start()
+        self.key_path_patch = patch.object(
+            app, 'AI_KEY_CONFIG_PATH', Path(self.temp_dir.name) / 'user-config' / 'MetaWatch' / 'openai-key.json'
+        )
+        self.key_path_patch.start()
+        self.environment_patch = patch.dict('os.environ', {'OPENAI_API_KEY': ''})
+        self.environment_patch.start()
         app.init()
         self.server = app.ThreadingHTTPServer(('127.0.0.1', 0), app.Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -196,6 +204,8 @@ class ApiFeatureTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()
+        self.environment_patch.stop()
+        self.key_path_patch.stop()
         self.db_patch.stop()
         self.temp_dir.cleanup()
 
@@ -207,6 +217,15 @@ class ApiFeatureTests(unittest.TestCase):
                 return response.status, json.loads(response.read())
         except HTTPError as error:
             return error.code, json.loads(error.read())
+
+    def restart_test_server(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+        self.server = app.ThreadingHTTPServer(('127.0.0.1', 0), app.Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = 'http://127.0.0.1:%s' % self.server.server_port
 
     def create_ai_daily_record(self, reflection_date=None, improvement='振り返りの記録'):
         day = reflection_date or app.tokyo_today().isoformat()
@@ -222,6 +241,167 @@ class ApiFeatureTests(unittest.TestCase):
 
     def consent_to_ai(self):
         return self.request_json('/api/ai-reflection/consent', {'consent': True})
+
+    def set_ai_key(self, key):
+        return self.request_json('/api/ai-reflection/key', {'action': 'save', 'api_key': key})
+
+    def delete_ai_key(self):
+        return self.request_json('/api/ai-reflection/key', {'action': 'delete', 'confirm_delete': True})
+
+    def test_ai_key_save_status_restart_and_secure_file_permissions(self):
+        secret = 'test-key-never-return-this'
+        status, response = self.set_ai_key(secret)
+        self.assertEqual(status, 200)
+        self.assertNotIn('api_key', response)
+        self.assertTrue(response['api_key_configured'])
+        self.assertEqual(response['api_key_source'], 'local_file')
+        self.assertTrue(self.key_path_patch.new.parent.exists())
+        self.assertEqual(self.key_path_patch.new.parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.key_path_patch.new.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(app.load_ai_api_key(), (secret, 'local_file'))
+
+        app.init()
+        self.restart_test_server()
+        status, response = self.request_json('/api/ai-reflection')
+        self.assertEqual(status, 200)
+        self.assertTrue(response['api_key_configured'])
+        self.assertEqual(response['api_key_source'], 'local_file')
+        self.assertNotIn(secret, json.dumps(response))
+        for path in ('/api/state', '/api/export.json', '/api/export/planning.json', '/api/export/learning.json', '/api/export.csv'):
+            with urlopen(self.base_url + path) as result:
+                exported = result.read().decode('utf-8')
+            self.assertNotIn(secret, exported)
+        with app.connect() as connection:
+            tables = [row['name'] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )]
+            database_values = [
+                tuple(row) for table in tables
+                for row in connection.execute('SELECT * FROM "' + table.replace('"', '""') + '"')
+            ]
+        self.assertNotIn(secret, repr(database_values))
+
+    def test_local_key_precedes_environment_and_delete_falls_back_explicitly(self):
+        local_key = 'local-priority-key'
+        environment_key = 'environment-fallback-key'
+        self.assertEqual(self.set_ai_key(local_key)[0], 200)
+        self.create_ai_daily_record()
+        self.assertEqual(self.consent_to_ai()[0], 200)
+        with patch.dict('os.environ', {'OPENAI_API_KEY': environment_key}):
+            status, details = self.request_json('/api/ai-reflection')
+            self.assertEqual(details['api_key_source'], 'local_file')
+            self.assertTrue(details['environment_key_configured'])
+            self.assertNotIn(local_key, json.dumps(details))
+            self.assertNotIn(environment_key, json.dumps(details))
+
+            response_body = json.dumps({
+                'choices': [{'message': {'content': json.dumps(self.AI_RESULT, ensure_ascii=False)}}],
+            }).encode('utf-8')
+            response = Mock()
+            response.status = 200
+            response.read.return_value = response_body
+            response.__enter__ = Mock(return_value=response)
+            response.__exit__ = Mock(return_value=False)
+            with patch.object(app.urllib.request, 'urlopen', return_value=response) as urlopen_mock:
+                status, result = self.request_json('/api/ai-reflection/auto', {})
+            self.assertEqual(status, 200)
+            self.assertEqual(result['status'], 'succeeded')
+            headers = urlopen_mock.call_args_list[0].args[0].headers
+            self.assertIn('Bearer ' + local_key, headers.values())
+
+            status, details = self.delete_ai_key()
+            self.assertEqual(status, 200)
+            self.assertEqual(details['api_key_source'], 'environment')
+            self.assertFalse(details['local_key_present'])
+            self.assertTrue(details['api_key_configured'])
+            self.assertFalse(self.key_path_patch.new.exists())
+            self.assertEqual(app.load_ai_api_key(), (environment_key, 'environment'))
+            with patch.object(app.urllib.request, 'urlopen', return_value=response) as urlopen_mock:
+                status, result = self.request_json('/api/ai-reflection/manual', {})
+            self.assertEqual(status, 200)
+            self.assertEqual(result['status'], 'succeeded')
+            self.assertIn('Bearer ' + environment_key, urlopen_mock.call_args.args[0].headers.values())
+
+    def test_environment_key_fallback_is_reported_without_returning_value(self):
+        secret = 'environment-only-secret'
+        with patch.dict('os.environ', {'OPENAI_API_KEY': secret}):
+            status, details = self.request_json('/api/ai-reflection')
+            self.assertEqual(status, 200)
+            self.assertTrue(details['api_key_configured'])
+            self.assertEqual(details['api_key_source'], 'environment')
+            self.assertTrue(details['environment_key_configured'])
+            self.assertNotIn(secret, json.dumps(details))
+            self.assertEqual(app.load_ai_api_key(), (secret, 'environment'))
+        with patch.dict('os.environ', {'OPENAI_API_KEY': 'invalid\nkey'}):
+            status, details = self.request_json('/api/ai-reflection')
+            self.assertEqual(status, 200)
+            self.assertEqual(details['api_key_source'], 'error')
+            self.assertFalse(details['api_key_configured'])
+            self.assertIn('形式', details['key_settings_error'])
+
+    def test_malformed_key_file_is_reported_and_can_be_deleted(self):
+        self.key_path_patch.new.parent.mkdir(parents=True, mode=0o700)
+        self.key_path_patch.new.write_text('{broken json', encoding='utf-8')
+        self.key_path_patch.new.chmod(0o600)
+        with patch.dict('os.environ', {'OPENAI_API_KEY': 'configured-env-fallback'}):
+            status, details = self.request_json('/api/ai-reflection')
+        self.assertEqual(status, 200)
+        self.assertEqual(details['api_key_source'], 'error')
+        self.assertTrue(details['local_key_present'])
+        self.assertFalse(details['api_key_configured'])
+        self.assertIn('JSON', details['key_settings_error'])
+        self.assertNotIn('api_key', details)
+        self.assertEqual(self.delete_ai_key()[0], 200)
+        self.assertFalse(self.key_path_patch.new.exists())
+
+    def test_key_file_access_and_write_errors_are_explicit(self):
+        self.key_path_patch.new.parent.parent.mkdir(parents=True)
+        self.key_path_patch.new.parent.write_text('not a directory', encoding='utf-8')
+        status, details = self.request_json('/api/ai-reflection')
+        self.assertEqual(status, 200)
+        self.assertEqual(details['api_key_source'], 'error')
+        self.assertIn('フォルダー', details['key_settings_error'])
+        status, result = self.set_ai_key('write-error-test-key')
+        self.assertEqual(status, 500)
+        self.assertIn('アクセス', result['error'])
+        self.assertNotIn('write-error-test-key', json.dumps(result))
+
+    def test_key_file_read_errors_are_reported_without_environment_fallback(self):
+        self.assertEqual(self.set_ai_key('saved-local-key')[0], 200)
+        original_open = app.os.open
+
+        def fail_config_read(path, *args, **kwargs):
+            if Path(path) == self.key_path_patch.new:
+                raise PermissionError('test read failure')
+            return original_open(path, *args, **kwargs)
+
+        with patch.dict('os.environ', {'OPENAI_API_KEY': 'environment-fallback'}), patch.object(
+            app.os, 'open', side_effect=fail_config_read
+        ):
+            status, details = self.request_json('/api/ai-reflection')
+        self.assertEqual(status, 200)
+        self.assertEqual(details['api_key_source'], 'error')
+        self.assertFalse(details['api_key_configured'])
+        self.assertIn('読み込めません', details['key_settings_error'])
+
+    def test_key_settings_endpoint_rejects_cross_site_and_does_not_put_key_in_url(self):
+        secret = 'url-and-log-exclusion-key'
+        request = Request(
+            self.base_url + '/api/ai-reflection/key',
+            data=json.dumps({'action': 'save', 'api_key': secret}).encode('utf-8'),
+            headers={'Content-Type': 'application/json', 'Origin': 'http://attacker.invalid'},
+        )
+        with self.assertRaises(HTTPError) as error:
+            urlopen(request)
+        self.assertEqual(error.exception.code, 403)
+        self.assertNotIn(secret, request.full_url)
+        self.assertFalse(self.key_path_patch.new.exists())
+        log_output = io.StringIO()
+        with redirect_stderr(log_output):
+            status, response = self.set_ai_key(secret)
+        self.assertEqual(status, 200)
+        self.assertNotIn(secret, json.dumps(response))
+        self.assertNotIn(secret, log_output.getvalue())
 
     def test_course_ratings_and_daily_plans_are_independent_histories(self):
         self.assertEqual(self.request_json('/api/courses', {'name': '基礎講座'})[0], 200)
@@ -392,6 +572,10 @@ class ApiFeatureTests(unittest.TestCase):
         self.assertIn('def ai_reflection_inputs(connection, target_date):', server_source)
         self.assertIn("api('/api/ai-reflection')", script)
         self.assertIn('function renderAiReflection(data', script)
+        self.assertIn('function renderAiKeySettings(container, data)', script)
+        self.assertIn("input.type = 'password';", script)
+        self.assertIn("input.value = '';", script)
+        self.assertIn("api('/api/ai-reflection/key'", script)
         self.assertIn('cell.dataset.date = date;', script)
         self.assertIn('cell.dataset.recorded = String(recorded);', script)
         self.assertIn("cell.setAttribute('aria-pressed'", script)
@@ -421,7 +605,7 @@ class ApiFeatureTests(unittest.TestCase):
         with patch.dict('os.environ', {'OPENAI_API_KEY': ''}), patch.object(app, 'request_openai_reflection') as request:
             status, result = self.request_json('/api/ai-reflection/auto', {})
             self.assertEqual(status, 503)
-            self.assertIn('OPENAI_API_KEY', result['error'])
+            self.assertIn('分析は実行していません', result['error'])
             request.assert_not_called()
 
         with patch.dict('os.environ', {'OPENAI_API_KEY': 'test-key'}), patch.object(app, 'request_openai_reflection') as request:
@@ -483,7 +667,7 @@ class ApiFeatureTests(unittest.TestCase):
         started = threading.Event()
         release = threading.Event()
 
-        def fake_request(model, payload):
+        def fake_request(model, payload, api_key=None):
             started.set()
             release.wait(3)
             return self.AI_RESULT

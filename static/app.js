@@ -443,12 +443,88 @@ function renderSelectedDayReflections() {
   container.append(item);
  });
 }
-async function loadAiReflection(actionError = '') {
+function renderAiKeySettings(container, data) {
+ const section = el('section', undefined, 'ai-key-settings');
+ section.append(el('h3', 'OpenAI APIキー設定'));
+ const sources = {
+  local_file: '設定済み（このアプリ専用のローカル設定ファイル）',
+  environment: '設定済み（サーバー環境変数 OPENAI_API_KEY）',
+  none: '未設定',
+  error: 'APIキー設定に問題があります',
+ };
+ section.append(el('p', `現在の状態: ${sources[data.api_key_source] || sources.error}`, 'ai-key-status'));
+ if (data.key_settings_error) {
+  section.append(el('p', data.key_settings_error, 'error'));
+ }
+ if (data.api_key_source === 'environment') {
+  section.append(el('p', '環境変数で管理されているキーは、この画面から削除できません。起動元の環境変数を削除してください。', 'muted'));
+ } else if (data.api_key_source === 'local_file' && data.environment_key_configured) {
+  section.append(el('p', 'この画面に保存したキーが優先されています。削除するとサーバー環境変数 OPENAI_API_KEY のキーへ切り替わります。', 'muted'));
+ } else if (data.api_key_source === 'local_file' && data.environment_key_present) {
+  section.append(el('p', '環境変数 OPENAI_API_KEY も設定されていますが、形式が不正で利用できません。ローカルキーを削除すると環境変数へ切り替わり、APIを利用できなくなります。', 'error'));
+ } else if (data.api_key_source === 'local_file') {
+  section.append(el('p', '保存済みのキーは再表示しません。削除するとAPIキー未設定になります。', 'muted'));
+ } else {
+  section.append(el('p', '保存したキーはアプリ専用のローカル設定ファイルに保存され、環境変数のキーより優先されます。保存後もキーの値は画面に表示しません。', 'muted'));
+ }
+ const form = el('form', undefined, 'ai-key-form');
+ const label = el('label', 'APIキー（保存後は再表示されません）');
+ const input = el('input');
+ input.type = 'password';
+ input.name = 'api_key';
+ input.autocomplete = 'new-password';
+ input.required = true;
+ input.maxLength = 4096;
+ input.setAttribute('aria-label', 'OpenAI APIキー');
+ label.append(input);
+ const save = el('button', 'ローカル設定に保存');
+ save.type = 'submit';
+ form.append(label, save);
+ form.onsubmit = async event => {
+  event.preventDefault();
+  save.disabled = true;
+  try {
+   await api('/api/ai-reflection/key', {action: 'save', api_key: input.value});
+   input.value = '';
+   await loadAiReflection('', false);
+  } catch (error) {
+   section.append(el('p', `APIキーを保存できませんでした: ${error.message}`, 'error'));
+  } finally {
+   save.disabled = false;
+  }
+ };
+ section.append(form);
+ section.append(el('p', 'キーの保存操作自体では分析しません。送信に同意済みの場合、次回ホームを開いたとき対象記録があれば自動分析が実行され、利用料金が発生する可能性があります。', 'muted'));
+ if (data.local_key_present) {
+  const remove = el('button', 'ローカル保存キーを削除', 'ai-key-delete');
+  remove.type = 'button';
+  remove.onclick = async () => {
+   const fallbackMessage = data.environment_key_configured
+    ? 'ローカル設定ファイルのキーを削除します。削除後は環境変数 OPENAI_API_KEY のキーに切り替わります。送信に同意済みで当日の自動分析が未実行の場合、次回ホーム表示時に自動分析が行われる可能性があります。続けますか？'
+    : data.environment_key_present
+     ? 'ローカル設定ファイルのキーを削除します。環境変数 OPENAI_API_KEY はありますが形式不正のため、削除後はAPIを利用できなくなります。続けますか？'
+    : 'ローカル設定ファイルのAPIキーを削除します。削除後はAPIキー未設定になります。続けますか？';
+   if (!window.confirm(fallbackMessage)) return;
+   remove.disabled = true;
+   try {
+    await api('/api/ai-reflection/key', {action: 'delete', confirm_delete: true});
+    await loadAiReflection('', false);
+   } catch (error) {
+    section.append(el('p', `APIキーを削除できませんでした: ${error.message}`, 'error'));
+   } finally {
+    remove.disabled = false;
+   }
+  };
+  section.append(remove);
+ }
+ container.append(section);
+}
+async function loadAiReflection(actionError = '', allowAuto = true) {
  const container = $('#ai-reflection');
  if (!container) return;
  try {
   let data = await api('/api/ai-reflection');
-  const shouldAutoGenerate = data.consented && data.api_key_configured &&
+  const shouldAutoGenerate = allowAuto && data.consented && data.api_key_configured &&
    !data.auto_checked && !data.in_progress && !data.latest_result;
   if (shouldAutoGenerate) {
    renderAiReflection({...data, in_progress: true});
@@ -479,13 +555,14 @@ function renderAiReflection(data, loadError = '') {
   `接続状態: OpenAI APIキー ${data.api_key_configured ? '設定済み' : '未設定'} · 送信同意 ${data.consented ? '有効' : '未同意'} · 分析 ${data.latest_result ? '生成済み' : '未生成'}`,
   'muted',
  ));
+ renderAiKeySettings(container, data);
  container.append(el('p', '対象期間: ' + dateLabel(data.period_start) + '〜' + dateLabel(data.period_end) + ' · 自動分析はAsia/Tokyoの日付ごとに最大1回です。', 'muted'));
  if (!data.consented) {
   container.append(el('p', '現在は未接続・未生成です。分析を有効にするには、記録をOpenAIへ送信することへの明示的な同意が必要です。', 'ai-reflection-status'));
  } else if (!data.api_key_configured) {
-  container.append(el('p', '同意済みですが、サーバーにOPENAI_API_KEYが設定されていないため、APIは呼び出していません。キーはブラウザーへ送信されません。', 'ai-reflection-status'));
+  container.append(el('p', '同意済みですが、OpenAI APIキーが利用できないため、APIは呼び出していません。', 'ai-reflection-status'));
  } else {
-  container.append(el('p', 'OpenAIへの送信に同意済み · APIキーはサーバー環境変数から読み込みます。', 'ai-reflection-status'));
+  container.append(el('p', 'OpenAIへの送信に同意済み · キーはサーバー側で安全に読み込みます。', 'ai-reflection-status'));
  }
  if (!data.yesterday_has_record) {
   container.append(el('p', '昨日の学習記録はありません。', 'ai-reflection-yesterday-missing'));

@@ -49,8 +49,15 @@ main.single-page{display:block;max-width:980px;margin:0 auto}.planning-page{grid
 .selected-day-reflections{margin-top:16px;border-top:1px solid #dce4db;padding-top:12px}
 .selected-day-reflections h3{margin:0 0 8px}
 .ai-reflection{margin-top:18px}
+.ai-key-settings{margin:14px 0;padding:14px;border:1px solid #dce4db;border-radius:10px;background:#fbfcf9}
+.ai-key-settings h3{margin:0 0 8px}
+.ai-key-settings form{display:flex;align-items:end;gap:10px;margin:10px 0}
+.ai-key-settings label{flex:1;margin:0}
+.ai-key-settings input{margin-top:6px}
+.ai-key-settings .ai-key-delete{background:#f3e7e3;color:#7b342e}
+.ai-key-status{font-weight:600;color:#315b45}
 .ai-reflection-status{padding:10px 12px;border-radius:8px;background:#eef3ed;color:#315b45;font-weight:600}
 .ai-reflection-no-data,.ai-reflection-yesterday-missing{padding:9px 12px;border-left:3px solid #9db778;background:#f4f7ef;color:#405a3d}
 .ai-reflection-section{border-top:1px solid #dce4db;padding-top:8px;margin-top:12px}
 .ai-reflection-section h3{margin:8px 0}
-@media(max-width:680px){#heatmap,.heatmap-weekdays{gap:3px}.heat-cell{height:34px;padding:0 2px;font-size:11px}.heat-day-today{font-size:8px}.heatmap-card,.ai-reflection{padding:14px}}
+@media(max-width:680px){#heatmap,.heatmap-weekdays{gap:3px}.heat-cell{height:34px;padding:0 2px;font-size:11px}.heat-day-today{font-size:8px}.heatmap-card,.ai-reflection{padding:14px}.ai-key-settings form{display:block}.ai-key-settings form button{width:100%;margin-top:10px}}

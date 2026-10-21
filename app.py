@@ -15,6 +15,8 @@ import secrets
 import sqlite3
 import socket
 import ssl
+import stat
+import tempfile
 import threading
 import time
 import unicodedata
@@ -28,6 +30,7 @@ from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parent
 DB = Path(os.environ.get('REFLECTION_DB', str(ROOT / 'data' / 'reflection.sqlite3')))
+AI_KEY_CONFIG_PATH = Path.home() / 'Library' / 'Application Support' / 'MetaWatch' / 'openai-key.json'
 CURRICULUM_MAX_BYTES = 5 * 1024 * 1024
 CURRICULUM_TIMEOUT_SECONDS = 12
 UDEMY_HOSTS = frozenset(('udemy.com', 'www.udemy.com'))
@@ -50,11 +53,215 @@ class AIReflectionError(Exception):
     pass
 
 
+class AIKeyConfigError(Exception):
+    def __init__(self, message, local_file_present=False):
+        super().__init__(message)
+        self.local_file_present = local_file_present
+
+
 def connect():
     conn = sqlite3.connect(str(DB))
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA foreign_keys = ON')
     return conn
+
+
+def _ensure_ai_key_directory(create=False):
+    directory = AI_KEY_CONFIG_PATH.parent
+    try:
+        if create:
+            directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+        info = os.lstat(directory)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        raise AIKeyConfigError('OpenAI APIキー設定フォルダーにアクセスできません。')
+    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        raise AIKeyConfigError('OpenAI APIキー設定フォルダーが安全なフォルダーではありません。')
+    if hasattr(os, 'getuid') and info.st_uid != os.getuid():
+        raise AIKeyConfigError('OpenAI APIキー設定フォルダーの所有者が現在のユーザーではありません。')
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:
+        raise AIKeyConfigError('OpenAI APIキー設定フォルダーのアクセス権を制限できません。')
+    return True
+
+
+def _validated_ai_key_file_info():
+    try:
+        info = os.lstat(AI_KEY_CONFIG_PATH)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise AIKeyConfigError('OpenAI APIキー設定ファイルにアクセスできません。', True)
+    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        raise AIKeyConfigError('OpenAI APIキー設定ファイルが通常ファイルではありません。', True)
+    if hasattr(os, 'getuid') and info.st_uid != os.getuid():
+        raise AIKeyConfigError('OpenAI APIキー設定ファイルの所有者が現在のユーザーではありません。', True)
+    try:
+        os.chmod(AI_KEY_CONFIG_PATH, 0o600)
+    except OSError:
+        raise AIKeyConfigError('OpenAI APIキー設定ファイルのアクセス権を制限できません。', True)
+    return info
+
+
+def _validate_ai_key(value):
+    if not isinstance(value, str):
+        raise ValueError('APIキーを入力してください。')
+    value = value.strip()
+    if not value or len(value) > 4096 or not value.isascii() or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError('APIキーの形式または長さが不正です。')
+    return value
+
+
+def read_local_ai_key():
+    if not _ensure_ai_key_directory():
+        return None
+    info = _validated_ai_key_file_info()
+    if info is None:
+        return None
+    flags = os.O_RDONLY
+    if hasattr(os, 'O_NOFOLLOW'):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(AI_KEY_CONFIG_PATH, flags)
+        with os.fdopen(descriptor, 'rb') as key_file:
+            file_info = os.fstat(key_file.fileno())
+            if not stat.S_ISREG(file_info.st_mode) or (
+                hasattr(os, 'getuid') and file_info.st_uid != os.getuid()
+            ):
+                raise AIKeyConfigError('OpenAI APIキー設定ファイルが通常ファイルではありません。', True)
+            raw = key_file.read(8193)
+    except AIKeyConfigError:
+        raise
+    except OSError:
+        raise AIKeyConfigError('OpenAI APIキー設定ファイルを読み込めません。', True)
+    if len(raw) > 8192:
+        raise AIKeyConfigError('OpenAI APIキー設定ファイルのサイズが不正です。', True)
+    try:
+        data = json.loads(raw.decode('utf-8'))
+        if not isinstance(data, dict) or set(data) != {'api_key'}:
+            raise ValueError()
+        return _validate_ai_key(data['api_key'])
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        raise AIKeyConfigError('OpenAI APIキー設定ファイルのJSONまたは値が不正です。', True)
+
+
+def load_ai_api_key():
+    local_key = read_local_ai_key()
+    if local_key is not None:
+        return local_key, 'local_file'
+    environment_key = os.environ.get('OPENAI_API_KEY', '').strip()
+    if environment_key:
+        try:
+            return _validate_ai_key(environment_key), 'environment'
+        except ValueError:
+            raise AIKeyConfigError('環境変数OPENAI_API_KEYの形式または長さが不正です。')
+    return '', 'none'
+
+
+def ai_api_key_status():
+    environment_value = os.environ.get('OPENAI_API_KEY', '').strip()
+    environment_present = bool(environment_value)
+    environment_configured = False
+    environment_invalid = False
+    if environment_present:
+        try:
+            _validate_ai_key(environment_value)
+            environment_configured = True
+        except ValueError:
+            environment_invalid = True
+    try:
+        local_key = read_local_ai_key()
+    except AIKeyConfigError as error:
+        return {
+            'api_key_configured': False,
+            'api_key_source': 'error',
+            'local_key_present': error.local_file_present,
+            'environment_key_configured': environment_configured,
+            'environment_key_present': environment_present,
+            'key_settings_error': str(error),
+        }
+    if local_key is not None:
+        return {
+            'api_key_configured': True,
+            'api_key_source': 'local_file',
+            'local_key_present': True,
+            'environment_key_configured': environment_configured,
+            'environment_key_present': environment_present,
+            'key_settings_error': '',
+        }
+    if environment_invalid:
+        return {
+            'api_key_configured': False,
+            'api_key_source': 'error',
+            'local_key_present': False,
+            'environment_key_configured': False,
+            'environment_key_present': True,
+            'key_settings_error': '環境変数OPENAI_API_KEYの形式または長さが不正です。',
+        }
+    return {
+        'api_key_configured': environment_configured,
+        'api_key_source': 'environment' if environment_configured else 'none',
+        'local_key_present': False,
+        'environment_key_configured': environment_configured,
+        'environment_key_present': environment_present,
+        'key_settings_error': '',
+    }
+
+
+def save_local_ai_key(value):
+    key = _validate_ai_key(value)
+    _ensure_ai_key_directory(create=True)
+    _validated_ai_key_file_info()
+    descriptor = None
+    temporary_path = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(prefix='.openai-key-', dir=str(AI_KEY_CONFIG_PATH.parent))
+        temporary_path = Path(temporary_name)
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, 'wb') as key_file:
+            descriptor = None
+            key_file.write(json.dumps({'api_key': key}, ensure_ascii=False).encode('utf-8'))
+            key_file.flush()
+            os.fsync(key_file.fileno())
+        os.replace(temporary_path, AI_KEY_CONFIG_PATH)
+        temporary_path = None
+        directory_descriptor = os.open(AI_KEY_CONFIG_PATH.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    except OSError:
+        raise AIKeyConfigError('OpenAI APIキー設定ファイルを安全に保存できませんでした。')
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+
+
+def delete_local_ai_key():
+    if not _ensure_ai_key_directory():
+        return False
+    _validated_ai_key_file_info()
+    try:
+        os.unlink(AI_KEY_CONFIG_PATH)
+        directory_descriptor = os.open(AI_KEY_CONFIG_PATH.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        raise AIKeyConfigError('OpenAI APIキー設定ファイルを削除できませんでした。', True)
 
 
 def init():
@@ -193,6 +400,7 @@ def ai_reflection_inputs(connection, target_date):
 
 def ai_reflection_status():
     target_date = tokyo_today().isoformat()
+    key_status = ai_api_key_status()
     with connect() as connection:
         payload, _, input_hash = ai_reflection_inputs(connection, target_date)
         consented = connection.execute('SELECT 1 FROM ai_reflection_consent WHERE id=1').fetchone() is not None
@@ -228,7 +436,7 @@ def ai_reflection_status():
         'period_start': payload['period_start'],
         'period_end': payload['period_end'],
         'model': os.environ.get('OPENAI_MODEL', AI_REFLECTION_MODEL).strip() or AI_REFLECTION_MODEL,
-        'api_key_configured': bool(os.environ.get('OPENAI_API_KEY', '').strip()),
+        **key_status,
         'consented': consented,
         'analysis_record_count': len(payload['daily_reflections']),
         'analysis_dates': sorted({row['reflection_date'] for row in payload['daily_reflections']}),
@@ -242,10 +450,11 @@ def ai_reflection_status():
     }
 
 
-def request_openai_reflection(model, payload):
-    api_key = os.environ.get('OPENAI_API_KEY', '').strip()
+def request_openai_reflection(model, payload, api_key=None):
+    if api_key is None:
+        api_key, _ = load_ai_api_key()
     if not api_key:
-        raise AIReflectionError('OPENAI_API_KEYが設定されていません。')
+        raise AIReflectionError('OpenAI APIキーが設定されていません。')
     system_prompt = (
         'あなたは学習記録を整理するアシスタントです。次のJSON内にある日次振り返りと当日の計画だけを根拠に日本語で回答してください。'
         '日付を根拠として示し、記録のない日は否定的に評価しないでください。自己評価の数値を能力の証明や不足と混同せず、記録にない成果・行動・能力を推測しないでください。'
@@ -317,8 +526,12 @@ def generate_ai_reflection(run_type):
         connection.execute('BEGIN IMMEDIATE')
         if connection.execute('SELECT 1 FROM ai_reflection_consent WHERE id=1').fetchone() is None:
             return 403, {'error': 'OpenAIへの送信に同意していないため、分析は実行していません。'}
-        if not os.environ.get('OPENAI_API_KEY', '').strip():
-            return 503, {'error': 'OPENAI_API_KEYが設定されていないため、分析は実行していません。'}
+        try:
+            api_key, _ = load_ai_api_key()
+        except AIKeyConfigError as error:
+            return 500, {'error': str(error)}
+        if not api_key:
+            return 503, {'error': 'OpenAI APIキーが設定されていないため、分析は実行していません。'}
         daily_payload, record_ids, input_hash = ai_reflection_inputs(connection, target_date)
         daily_state = connection.execute(
             'SELECT auto_count,auto_checked FROM ai_reflection_daily_state WHERE target_date=?',
@@ -377,7 +590,7 @@ def generate_ai_reflection(run_type):
         )
         run_id = cursor.lastrowid
     try:
-        result = request_openai_reflection(model, daily_payload)
+        result = request_openai_reflection(model, daily_payload, api_key)
     except AIReflectionError as error:
         with connect() as connection:
             connection.execute(
@@ -890,6 +1103,20 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         connection.execute('DELETE FROM ai_reflection_consent WHERE id=1')
                 return self.reply(200, {'ok': True, 'consented': d['consent']})
+            if self.path == '/api/ai-reflection/key':
+                action = required(d, 'action')
+                try:
+                    if action == 'save':
+                        save_local_ai_key(d.get('api_key'))
+                    elif action == 'delete':
+                        if d.get('confirm_delete') is not True:
+                            raise ValueError('APIキー設定ファイルの削除を確認してください。')
+                        delete_local_ai_key()
+                    else:
+                        raise ValueError('APIキー設定の操作が不正です。')
+                except AIKeyConfigError as error:
+                    return self.reply(500, {'error': str(error)})
+                return self.reply(200, {'ok': True, **ai_api_key_status()})
             if self.path in ('/api/ai-reflection/auto', '/api/ai-reflection/manual'):
                 run_type = 'manual' if self.path.endswith('/manual') else 'auto'
                 status, result = generate_ai_reflection(run_type)
