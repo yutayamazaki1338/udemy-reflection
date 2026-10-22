@@ -80,6 +80,8 @@ class AIChatTests(unittest.TestCase):
                         self.assertIn('MetaWatch Assistant', body)
                         self.assertIn('/assistant-portrait.png', body)
                         self.assertIn('maxlength="4000"', body)
+                        self.assertIn('placeholder="今の学習の様子や、気づいた変化を話してみてください。"', body)
+                        self.assertIn('<details class="chat-management">', body)
             openai.assert_not_called()
         with urlopen(self.base_url + '/assistant-portrait.png') as response:
             self.assertEqual(response.headers.get_content_type(), 'image/png')
@@ -93,6 +95,24 @@ class AIChatTests(unittest.TestCase):
             script = response.read().decode('utf-8')
         self.assertIn("body.append(el('p', message.content, 'chat-message-content'));", script)
         self.assertNotIn('innerHTML', script)
+        with urlopen(self.base_url + '/style.css') as response:
+            stylesheet = response.read().decode('utf-8')
+        self.assertIn('.chat-workspace{min-width:0;min-height:calc(100vh - 170px);display:flex;flex-direction:column}', stylesheet)
+        self.assertIn('.chat-messages{flex:1;height:auto;min-height:420px;overflow-y:auto', stylesheet)
+        self.assertIn('.chat-composer textarea{height:64px;min-height:64px;max-height:64px;resize:none}', stylesheet)
+        self.assertIn('.chat-messages{height:48vh;min-height:240px;max-height:60vh;padding:12px}', stylesheet)
+
+    def test_system_prompt_supports_natural_state_reflection_without_forcing_it(self):
+        prompt = app.ai_chat_system_prompt('natural')
+        self.assertIn('学習中の些細な状態変化を自然な対話で言語化', prompt)
+        self.assertIn('眠気、集中、理解、感情、行動', prompt)
+        self.assertIn('いつ頃起きたか', prompt)
+        self.assertIn('その直前に何をしていたか', prompt)
+        self.assertIn('前後で何が変わったか', prompt)
+        self.assertIn('一回答につき質問は原則ひとつ', prompt)
+        self.assertIn('原因を根拠なく断定せず', prompt)
+        self.assertIn('無理に学習状態の聞き取りへ結び付けない', prompt)
+        self.assertIn('事実・仮説・推測を区別', prompt)
 
     def test_multiple_sessions_on_same_day_date_retrieval_and_speech_style_prompt(self):
         day = app.tokyo_today().isoformat()
