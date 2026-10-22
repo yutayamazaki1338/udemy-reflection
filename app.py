@@ -39,7 +39,7 @@ AI_REFLECTION_MODEL = 'gpt-4o-mini'
 AI_REFLECTION_PROMPT_VERSION = '2026-10-21-v1'
 AI_REFLECTION_TIMEOUT_SECONDS = 30
 AI_REFLECTION_MAX_RESPONSE_BYTES = 100_000
-AI_CHAT_DEFAULT_MODEL = 'gpt-4o-mini'
+AI_CHAT_DEFAULT_MODEL = 'gpt-6-luna'
 AI_CHAT_DEFAULT_DAILY_LIMIT = 20
 AI_CHAT_MAX_DAILY_LIMIT = 500
 AI_CHAT_MAX_MESSAGE_CHARS = 4000
@@ -703,8 +703,7 @@ def request_openai_chat(model, messages, api_key=None):
     body = json.dumps({
         'model': model,
         'messages': messages,
-        'temperature': 0.7,
-        'max_tokens': 1200,
+        'max_completion_tokens': 1200,
     }, ensure_ascii=False).encode('utf-8')
     request = urllib.request.Request(
         'https://api.openai.com/v1/chat/completions',
