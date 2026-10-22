@@ -10,12 +10,13 @@
   <section id="plan-selection" aria-labelledby="plan-selection-heading">
    <h3 id="plan-selection-heading">計画に単元を追加</h3>
    <p class="muted">単元を複数選び、まとめて追加できます。視聴済みの単元も復習用に選択できます。</p>
+   <label for="plan-course-select">講座を選択<select id="plan-course-select"><option value="">講座を選択してください</option></select></label>
    <p id="plan-selection-count" class="muted" aria-live="polite"></p>
    <div class="plan-selection-controls">
     <button type="button" id="plan-select-all">すべて選択</button>
     <button type="button" id="plan-clear-selection" class="secondary">選択を解除</button>
    </div>
-   <div class="plan-table-scroll">
+   <div id="plan-table-scroll" class="plan-table-scroll">
     <table id="plan-lecture-table">
      <thead><tr><th scope="col">選択</th><th scope="col">講座</th><th scope="col">単元</th><th scope="col">視聴状況</th><th scope="col">今日の計画</th></tr></thead>
      <tbody></tbody>
@@ -37,7 +38,8 @@
  <section class="card">
   <h2 id="daily-reflection-date">1日の学習を終了</h2>
   <form id="daily-reflection-form">
-   <label>計画した講座・単元を消化できましたか？<select name="plan_completed"><option value="true">はい</option><option value="false">いいえ</option></select></label>
+   <p id="plan-completion-summary" class="muted" role="status"></p>
+   <input type="hidden" name="plan_completed" value="false">
    <label>実際の学習時間（分）<input type="number" name="study_minutes" required min="0" step="1" value="0"></label>
    <label>今日の自己評価<select name="self_rating"><option value="1">1 / 低い</option><option value="2">2 / やや低い</option><option value="3" selected>3 / 普通</option><option value="4">4 / よくできた</option><option value="5">5 / とてもよくできた</option></select></label>
    <label>改善点<textarea name="improvement" rows="2" required></textarea></label>
