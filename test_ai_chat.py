@@ -130,7 +130,7 @@ class AIChatTests(unittest.TestCase):
         self.assertEqual(result['model'], app.AI_CHAT_DEFAULT_MODEL)
         self.assertEqual(request.call_count, 1)
         model, messages, _key = request.call_args.args
-        self.assertEqual(model, 'gpt-4o-mini')
+        self.assertEqual(model, 'gpt-6-luna')
         self.assertIn('親しみやすく柔らかな日本語', messages[0]['content'])
         self.assertEqual(messages[-1], {'role': 'user', 'content': '学んだ内容を説明してください'})
 
@@ -140,7 +140,7 @@ class AIChatTests(unittest.TestCase):
         self.assertEqual([message['role'] for message in data['messages']], ['user', 'assistant'])
         self.assertEqual(data['messages'][0]['speech_style'], 'friendly')
         self.assertEqual(data['messages'][1]['speech_style'], 'friendly')
-        self.assertEqual(data['messages'][1]['model'], 'gpt-4o-mini')
+        self.assertEqual(data['messages'][1]['model'], 'gpt-6-luna')
         self.assertEqual(data['messages'][1]['input_tokens'], 12)
         self.assertEqual(data['messages'][1]['output_tokens'], 6)
         self.assertEqual(data['daily_input_tokens'], 12)
@@ -347,7 +347,7 @@ class AIChatTests(unittest.TestCase):
         )
         self.assertEqual(rows[0]['content'], "'" + malicious)
         self.assertEqual(rows[1]['speech_style'], 'natural')
-        self.assertEqual(rows[1]['model'], 'gpt-4o-mini')
+        self.assertEqual(rows[1]['model'], 'gpt-6-luna')
         self.assertNotIn('chat-test-secret', csv_bytes.decode('utf-8'))
 
     def test_openai_transport_is_mocked_bounded_and_uses_openai_model_override(self):
@@ -355,7 +355,11 @@ class AIChatTests(unittest.TestCase):
         response.status = 200
         response.read.return_value = json.dumps({
             'choices': [{'message': {'content': '  AIの回答  '}}],
-            'usage': {'prompt_tokens': 11, 'completion_tokens': 8},
+            'usage': {
+                'prompt_tokens': 11,
+                'completion_tokens': 28,
+                'completion_tokens_details': {'reasoning_tokens': 20},
+            },
         }).encode('utf-8')
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
@@ -364,13 +368,17 @@ class AIChatTests(unittest.TestCase):
             app.urllib.request, 'urlopen', return_value=response
         ) as request:
             result = app.request_openai_chat(app.ai_chat_model(), messages)
-        self.assertEqual(result, ('AIの回答', 11, 8))
+        self.assertEqual(result, ('AIの回答', 11, 28))
         call = request.call_args
         self.assertEqual(call.kwargs['timeout'], app.AI_CHAT_TIMEOUT_SECONDS)
         self.assertEqual(call.args[0].full_url, 'https://api.openai.com/v1/chat/completions')
         self.assertEqual(call.args[0].get_header('Authorization'), 'Bearer server-key')
-        self.assertEqual(json.loads(call.args[0].data)['model'], 'custom-model')
-        self.assertEqual(json.loads(call.args[0].data)['messages'], messages)
+        request_body = json.loads(call.args[0].data)
+        self.assertEqual(request_body['model'], 'custom-model')
+        self.assertEqual(request_body['messages'], messages)
+        self.assertEqual(request_body['max_completion_tokens'], 1200)
+        self.assertNotIn('max_tokens', request_body)
+        self.assertNotIn('temperature', request_body)
         self.assertEqual(response.read.call_args.args[0], app.AI_CHAT_MAX_RESPONSE_BYTES + 1)
 
         response.read.return_value = b'x' * (app.AI_CHAT_MAX_RESPONSE_BYTES + 1)
