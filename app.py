@@ -1121,6 +1121,7 @@ class Handler(BaseHTTPRequestHandler):
                 run_type = 'manual' if self.path.endswith('/manual') else 'auto'
                 status, result = generate_ai_reflection(run_type)
                 return self.reply(status, result)
+            response = {'ok': True}
             with connect() as c:
                 if self.path == '/api/courses':
                     course_url = d.get('course_url', '')
@@ -1305,22 +1306,56 @@ class Handler(BaseHTTPRequestHandler):
                     })
                 elif self.path == '/api/plans':
                     plan_date = parse_date(required(d, 'plan_date'))
-                    if d.get('lecture_id') not in (None, ''):
-                        lecture_id = int(d['lecture_id'])
+                    if 'lecture_ids' in d:
+                        lecture_ids = d['lecture_ids']
+                        if any(key in d for key in ('lecture_id', 'course_name', 'lecture_title')):
+                            raise ValueError('一括登録と単件登録の入力を同時に指定できません')
+                        if not isinstance(lecture_ids, list) or not lecture_ids or len(lecture_ids) > 500:
+                            raise ValueError('追加する単元を1〜500件選択してください')
+                        if any(type(lecture_id) is not int or lecture_id <= 0 for lecture_id in lecture_ids):
+                            raise ValueError('単元IDが不正です')
+                        if len(set(lecture_ids)) != len(lecture_ids):
+                            raise ValueError('同じ単元が複数回選択されています')
+                        c.execute('BEGIN IMMEDIATE')
+                        placeholders = ','.join('?' for _ in lecture_ids)
+                        valid_ids = {
+                            row['id'] for row in c.execute(
+                                'SELECT id FROM lectures WHERE id IN (%s)' % placeholders,
+                                lecture_ids,
+                            )
+                        }
+                        if valid_ids != set(lecture_ids):
+                            raise ValueError('登録されていない単元が含まれています。計画は追加されていません。')
+                        planned_ids = {
+                            row['lecture_id'] for row in c.execute(
+                                'SELECT lecture_id FROM study_plans WHERE plan_date=? AND lecture_id IN (%s)' % placeholders,
+                                [plan_date, *lecture_ids],
+                            )
+                        }
+                        if planned_ids:
+                            raise ValueError('すでにこの日の計画に含まれる単元があります。計画は追加されていません。')
+                        c.executemany(
+                            'INSERT INTO study_plans(plan_date,lecture_id) VALUES (?,?)',
+                            ((plan_date, lecture_id) for lecture_id in lecture_ids),
+                        )
+                        response['added'] = len(lecture_ids)
                     else:
-                        course_name = required(d, 'course_name')
-                        lecture_title = required(d, 'lecture_title')
-                        course = find_course_by_name(c, course_name)
-                        if course:
-                            course_id = course['id']
+                        if d.get('lecture_id') not in (None, ''):
+                            lecture_id = int(d['lecture_id'])
                         else:
-                            course_id = insert_course(c, course_name)
-                        lecture = c.execute('SELECT id FROM lectures WHERE course_id=? AND title=? ORDER BY id LIMIT 1', (course_id, lecture_title)).fetchone()
-                        if lecture:
-                            lecture_id = lecture['id']
-                        else:
-                            lecture_id = c.execute('INSERT INTO lectures(course_id,title) VALUES (?,?)', (course_id, lecture_title)).lastrowid
-                    c.execute('INSERT INTO study_plans(plan_date,lecture_id) VALUES (?,?)', (plan_date, lecture_id))
+                            course_name = required(d, 'course_name')
+                            lecture_title = required(d, 'lecture_title')
+                            course = find_course_by_name(c, course_name)
+                            if course:
+                                course_id = course['id']
+                            else:
+                                course_id = insert_course(c, course_name)
+                            lecture = c.execute('SELECT id FROM lectures WHERE course_id=? AND title=? ORDER BY id LIMIT 1', (course_id, lecture_title)).fetchone()
+                            if lecture:
+                                lecture_id = lecture['id']
+                            else:
+                                lecture_id = c.execute('INSERT INTO lectures(course_id,title) VALUES (?,?)', (course_id, lecture_title)).lastrowid
+                        c.execute('INSERT INTO study_plans(plan_date,lecture_id) VALUES (?,?)', (plan_date, lecture_id))
                 elif self.path == '/api/daily-reflections':
                     reflection_date = parse_date(required(d, 'reflection_date'))
                     if type(d.get('plan_completed')) is not bool:
@@ -1339,7 +1374,7 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 else:
                     return self.reply(404, {'error': '見つかりません'})
-            self.reply(200, {'ok': True})
+            self.reply(200, response)
         except (ValueError, KeyError, TypeError, sqlite3.IntegrityError) as e:
             self.reply(400, {'error': str(e)})
 

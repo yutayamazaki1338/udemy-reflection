@@ -7,16 +7,32 @@
   <div class="page-heading"><div><h2 id="plan-heading">今日の学習計画</h2><label>対象日<input type="date" id="plan-date"></label></div><a class="download" href="/api/export/planning.json">計画・日次振り返りをJSON保存</a></div>
   <div id="plan-prompt" class="prompt" role="status"></div>
   <div id="plan-list"></div>
-  <form id="plan-form">
-   <h3>計画に単元を追加</h3>
-   <label>登録済みの講座<select id="plan-course"><option value="">講座を選択</option></select></label>
-   <label>登録済みの単元<select id="plan-lecture" name="lecture_id"><option value="">単元を選択</option></select></label>
-   <details><summary>未登録の講座・単元を入力</summary><p class="muted">保存すると講座と単元にも登録され、講座の学習記録ページから利用できます。</p>
+  <section id="plan-selection" aria-labelledby="plan-selection-heading">
+   <h3 id="plan-selection-heading">計画に単元を追加</h3>
+   <p class="muted">単元を複数選び、まとめて追加できます。視聴済みの単元も復習用に選択できます。</p>
+   <p id="plan-selection-count" class="muted" aria-live="polite"></p>
+   <div class="plan-selection-controls">
+    <button type="button" id="plan-select-all">すべて選択</button>
+    <button type="button" id="plan-clear-selection" class="secondary">選択を解除</button>
+   </div>
+   <div class="plan-table-scroll">
+    <table id="plan-lecture-table">
+     <thead><tr><th scope="col">選択</th><th scope="col">講座</th><th scope="col">単元</th><th scope="col">視聴状況</th><th scope="col">今日の計画</th></tr></thead>
+     <tbody></tbody>
+    </table>
+   </div>
+   <p id="plan-selection-empty" class="muted" hidden></p>
+   <button type="button" id="plan-add-selected">選択した単元を計画に追加</button>
+  </section>
+  <details id="plan-manual-entry">
+   <summary>未登録の講座・単元を入力</summary>
+   <p class="muted">保存すると講座と単元にも登録され、講座の学習記録ページから利用できます。</p>
+   <form id="plan-form">
     <label>講座名<input name="course_name" maxlength="300" placeholder="例：新しい講座"></label>
     <label>見る単元・内容<input name="lecture_title" maxlength="300" placeholder="例：第1章 / イントロダクション"></label>
-   </details>
-   <button>この日の計画に追加</button>
-  </form>
+    <button>この日の計画に追加</button>
+   </form>
+  </details>
  </section>
  <section class="card">
   <h2 id="daily-reflection-date">1日の学習を終了</h2>
