@@ -439,6 +439,44 @@ class ApiFeatureTests(unittest.TestCase):
         self.assertEqual(len(planning_export[1]['study_plans']), 2)
         self.assertEqual(len(learning_export[1]['course_ratings']), 2)
 
+    def test_bulk_plan_add_is_atomic_rejects_duplicates_and_preserves_watched_state(self):
+        self.assertEqual(self.request_json('/api/courses', {'name': '一括計画講座'})[0], 200)
+        for title in ('第1単元', '第2単元', '第3単元'):
+            self.assertEqual(self.request_json('/api/lectures', {'course_id': 1, 'title': title})[0], 200)
+        self.assertEqual(self.request_json('/api/watched', {'id': 2, 'watched': True})[0], 200)
+        day = '2026-10-21'
+
+        status, result = self.request_json('/api/plans', {
+            'plan_date': day,
+            'lecture_ids': [1, 2],
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(result, {'ok': True, 'added': 2})
+        state = self.request_json('/api/state')[1]
+        self.assertEqual(len([plan for plan in state['study_plans'] if plan['plan_date'] == day]), 2)
+        self.assertEqual(next(lecture for lecture in state['lectures'] if lecture['id'] == 2)['watched'], 1)
+
+        for lecture_ids in ([2, 3], [3, 3], [3, 999], [True]):
+            with self.subTest(lecture_ids=lecture_ids):
+                self.assertEqual(self.request_json('/api/plans', {
+                    'plan_date': day,
+                    'lecture_ids': lecture_ids,
+                })[0], 400)
+                state = self.request_json('/api/state')[1]
+                self.assertEqual(len([plan for plan in state['study_plans'] if plan['plan_date'] == day]), 2)
+
+    def test_planning_page_exposes_bulk_selection_and_watched_status(self):
+        with urlopen(self.base_url + '/planning') as response:
+            page = response.read().decode('utf-8')
+        with urlopen(self.base_url + '/app.js') as response:
+            script = response.read().decode('utf-8')
+        self.assertIn('id="plan-lecture-table"', page)
+        self.assertIn('id="plan-select-all"', page)
+        self.assertIn('id="plan-add-selected"', page)
+        self.assertIn('視聴済みの単元も復習用に選択できます', page)
+        self.assertIn('lecture_ids: lectureIds', script)
+        self.assertIn("lecture.watched ? '視聴済み' : '未視聴'", script)
+
     def test_daily_reflection_completion_is_retained_in_history(self):
         self.assertEqual(self.request_json('/api/courses', {'name': '講座'})[0], 200)
         self.assertEqual(self.request_json('/api/lectures', {'course_id': 1, 'title': '単元'})[0], 200)

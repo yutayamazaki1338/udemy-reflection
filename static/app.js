@@ -1,5 +1,6 @@
 let state, courseId = null, lectureId = null, planDate = '', selectedDate = '';
 let curriculumPreview = null, curriculumLoading = false;
+const selectedPlanLectureIds = new Set();
 const AI_REFLECTION_DAYS = 14;
 const $ = s => document.querySelector(s);
 const el = (tag, text, cls) => {
@@ -345,30 +346,57 @@ function renderCourseRatings() {
   history.append(box);
  });
 }
-function updatePlanLectures() {
- const select = $('#plan-lecture');
- select.replaceChildren();
- select.append(new Option('単元を選択', ''));
- state.lectures.filter(l => l.course_id === Number($('#plan-course').value)).forEach(l => select.append(new Option(l.title, l.id)));
-}
 function renderPlan() {
- const planCourse = $('#plan-course');
- const selectedCourse = planCourse.value;
- planCourse.replaceChildren(new Option('講座を選択', ''));
- state.courses.forEach(c => planCourse.append(new Option(c.name, c.id)));
- planCourse.value = state.courses.some(c => String(c.id) === selectedCourse) ? selectedCourse : '';
- updatePlanLectures();
  $('#plan-date').value = planDate;
  $('#plan-heading').textContent = `${dateLabel(planDate)}の学習計画`;
  $('#daily-reflection-date').textContent = `${dateLabel(planDate)}の1日の学習を終了`;
  const plans = state.study_plans.filter(p => p.plan_date === planDate);
+ const plannedLectureIds = new Set(plans.map(p => p.lecture_id));
+ const availableLectures = state.lectures.filter(lecture => !plannedLectureIds.has(lecture.id));
+ for (const id of selectedPlanLectureIds) {
+  if (!availableLectures.some(lecture => lecture.id === id)) selectedPlanLectureIds.delete(id);
+ }
+ const tableBody = $('#plan-lecture-table tbody');
+ tableBody.replaceChildren();
+ state.lectures.forEach(lecture => {
+  const course = state.courses.find(item => item.id === lecture.course_id);
+  if (!course) return;
+  const alreadyPlanned = plannedLectureIds.has(lecture.id);
+  const row = document.createElement('tr');
+  if (alreadyPlanned) row.className = 'plan-already-added';
+  const selectCell = el('td');
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.value = lecture.id;
+  checkbox.checked = selectedPlanLectureIds.has(lecture.id);
+  checkbox.disabled = alreadyPlanned;
+  checkbox.setAttribute('aria-label', `${course.name} / ${lecture.title}を計画に選択`);
+  checkbox.onchange = () => {
+   if (checkbox.checked) selectedPlanLectureIds.add(lecture.id);
+   else selectedPlanLectureIds.delete(lecture.id);
+   updatePlanSelectionControls(availableLectures);
+  };
+  selectCell.append(checkbox);
+  row.append(selectCell, el('td', course.name), el('td', lecture.title));
+  const watchedCell = el('td');
+  watchedCell.append(el('span', lecture.watched ? '視聴済み' : '未視聴', lecture.watched ? 'watch-status watched' : 'watch-status'));
+  row.append(watchedCell, el('td', alreadyPlanned ? '追加済み' : '—', alreadyPlanned ? 'planned-status' : ''));
+  tableBody.append(row);
+ });
+ $('#plan-selection-empty').hidden = state.lectures.length > 0;
+ $('#plan-selection-empty').textContent = state.lectures.length ? '' : '登録済みの単元はありません。下の「未登録の講座・単元を入力」から追加できます。';
+ updatePlanSelectionControls(availableLectures);
  const planList = $('#plan-list');
  planList.replaceChildren();
  if (!plans.length) planList.append(el('p', 'この日の学習計画はありません。', 'muted'));
  plans.forEach(p => {
   const lecture = state.lectures.find(l => l.id === p.lecture_id);
   const course = lecture && state.courses.find(c => c.id === lecture.course_id);
-  if (lecture && course) planList.append(el('p', `${course.name} / ${lecture.title}`, 'plan-item'));
+  if (lecture && course) {
+   const item = el('p', undefined, 'plan-item');
+   item.append(el('span', `${course.name} / ${lecture.title}`), el('span', lecture.watched ? '視聴済み' : '未視聴', lecture.watched ? 'watch-status watched' : 'watch-status'));
+   planList.append(item);
+  }
  });
  const dailyHistory = $('#daily-reflection-history');
  dailyHistory.replaceChildren();
@@ -385,6 +413,30 @@ function renderPlan() {
  $('#plan-prompt').hidden = todayHasPlan;
  $('#plan-prompt').textContent = todayHasPlan ? '' : '今日の学習計画がまだありません。今日の計画を登録しましょう。';
  $('#daily-reflection-form [name=plan_completed]').disabled = plans.length === 0;
+}
+function updatePlanSelectionControls(availableLectures) {
+ const count = selectedPlanLectureIds.size;
+ $('#plan-selection-count').textContent = `${count}件選択中 · 今日の計画に追加済みの単元は選択できません。`;
+ $('#plan-add-selected').disabled = count === 0;
+ $('#plan-clear-selection').disabled = count === 0;
+ $('#plan-select-all').disabled = availableLectures.length === 0 || count === availableLectures.length;
+}
+async function addSelectedPlanLectures() {
+ const button = $('#plan-add-selected');
+ const lectureIds = [...selectedPlanLectureIds];
+ const submittedDate = planDate;
+ if (!lectureIds.length) return;
+ button.disabled = true;
+ try {
+  const result = await api('/api/plans', {plan_date: submittedDate, lecture_ids: lectureIds});
+  if (planDate === submittedDate) lectureIds.forEach(id => selectedPlanLectureIds.delete(id));
+  await refresh();
+  message(`${result.added}件の単元を学習計画に追加しました。`);
+ } catch (error) {
+  message(error.message, true);
+ } finally {
+  updatePlanSelectionControls(state.lectures.filter(lecture => !state.study_plans.some(plan => plan.plan_date === planDate && plan.lecture_id === lecture.id)));
+ }
 }
 function renderHeatmap() {
  const grid = $('#heatmap');
@@ -699,11 +751,21 @@ bindForm('#course-form', '/api/courses', d => d);
 bindForm('#lecture-form', '/api/lectures', d => ({...d, course_id: courseId}));
 bindForm('#reflection-form', '/api/reflections', d => ({...d, lecture_id: lectureId, satisfaction: Number(d.satisfaction), understanding: Number(d.understanding), recorded_at: new Date(d.recorded_at).toISOString()}));
 bindForm('#course-rating-form', '/api/course-ratings', d => ({...d, course_id: courseId, understanding: Number(d.understanding), instructor_match: Number(d.instructor_match), recorded_at: new Date(d.recorded_at).toISOString()}), '講座全体の評価を保存しました。');
-bindForm('#plan-form', '/api/plans', d => d.lecture_id ? {plan_date: planDate, lecture_id: Number(d.lecture_id)} : {plan_date: planDate, course_name: d.course_name, lecture_title: d.lecture_title}, '学習計画を保存しました。');
+bindForm('#plan-form', '/api/plans', d => ({plan_date: planDate, course_name: d.course_name, lecture_title: d.lecture_title}), '学習計画を保存しました。');
 bindForm('#daily-reflection-form', '/api/daily-reflections', d => ({...d, reflection_date: planDate, plan_completed: d.plan_completed === 'true', study_minutes: Number(d.study_minutes), self_rating: Number(d.self_rating), recorded_at: new Date().toISOString()}), '1日の振り返りを保存しました。');
 if ($('#filter')) $('#filter').onchange = render;
-if ($('#plan-course')) $('#plan-course').onchange = updatePlanLectures;
-if ($('#plan-date')) $('#plan-date').onchange = () => { planDate = $('#plan-date').value || today(); render(); };
+if ($('#plan-date')) $('#plan-date').onchange = () => {
+ planDate = $('#plan-date').value || today();
+ selectedPlanLectureIds.clear();
+ render();
+};
+if ($('#plan-select-all')) $('#plan-select-all').onclick = () => {
+ const planned = new Set(state.study_plans.filter(plan => plan.plan_date === planDate).map(plan => plan.lecture_id));
+ state.lectures.filter(lecture => !planned.has(lecture.id)).forEach(lecture => selectedPlanLectureIds.add(lecture.id));
+ renderPlan();
+};
+if ($('#plan-clear-selection')) $('#plan-clear-selection').onclick = () => { selectedPlanLectureIds.clear(); renderPlan(); };
+if ($('#plan-add-selected')) $('#plan-add-selected').onclick = addSelectedPlanLectures;
 if ($('#reflection-form')) $('#reflection-form [name=recorded_at]').value = localNow();
 if ($('#course-rating-form')) $('#course-rating-form [name=recorded_at]').value = localNow();
 if ($('#fetch-curriculum')) {

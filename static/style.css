@@ -61,3 +61,19 @@ main.single-page{display:block;max-width:980px;margin:0 auto}.planning-page{grid
 .ai-reflection-section{border-top:1px solid #dce4db;padding-top:8px;margin-top:12px}
 .ai-reflection-section h3{margin:8px 0}
 @media(max-width:680px){#heatmap,.heatmap-weekdays{gap:3px}.heat-cell{height:34px;padding:0 2px;font-size:11px}.heat-day-today{font-size:8px}.heatmap-card,.ai-reflection{padding:14px}.ai-key-settings form{display:block}.ai-key-settings form button{width:100%;margin-top:10px}}
+.plan-selection-controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+.plan-selection-controls .secondary{background:#eef3ed;color:#254c3e}
+.plan-table-scroll{overflow-x:auto;margin:12px 0 16px}
+#plan-lecture-table{width:100%;border-collapse:collapse;min-width:620px}
+#plan-lecture-table th,#plan-lecture-table td{padding:10px 12px;border-bottom:1px solid #dde5dc;text-align:left;vertical-align:middle}
+#plan-lecture-table th{background:#f4f7f1;color:#405a3d;font-size:12px;white-space:nowrap}
+#plan-lecture-table td:first-child,#plan-lecture-table th:first-child{text-align:center;width:58px}
+#plan-lecture-table input{width:18px;height:18px;margin:auto}
+#plan-lecture-table tr.plan-already-added{background:#f7f8f5;color:#657268}
+.watch-status,.planned-status{display:inline-block;border-radius:999px;padding:3px 8px;background:#eef3ed;color:#405a3d;font-size:12px;white-space:nowrap}
+.watch-status.watched{background:#dceec9;color:#22472b;font-weight:700}
+.planned-status{background:#e8ece8;color:#657268}
+#plan-add-selected{margin-bottom:12px}
+#plan-manual-entry{border-top:1px solid #dde5dc;padding-top:10px}
+.plan-item{display:flex;align-items:center;justify-content:space-between;gap:10px}
+@media(max-width:680px){#plan-lecture-table{min-width:600px}.plan-item{align-items:flex-start;flex-direction:column;gap:6px}}
