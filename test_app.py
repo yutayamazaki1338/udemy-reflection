@@ -434,7 +434,11 @@ class ApiFeatureTests(unittest.TestCase):
         self.assertEqual(state['daily_reflections'], [])
         planning_export = self.request_json('/api/export/planning.json')
         learning_export = self.request_json('/api/export/learning.json')
-        self.assertEqual(set(planning_export[1]), {'courses', 'course_sections', 'lectures', 'study_plans', 'daily_reflections'})
+        self.assertEqual(set(planning_export[1]), {
+            'courses', 'course_sections', 'lectures', 'study_plans', 'daily_reflections',
+            'ai_chat_sessions', 'ai_chat_messages', 'ai_chat_settings', 'ai_chat_usage_settings',
+            'ai_chat_daily_usage', 'ai_chat_requests', 'ai_chat_consent',
+        })
         self.assertEqual(set(learning_export[1]), {'courses', 'course_sections', 'lectures', 'reflections', 'course_ratings'})
         self.assertEqual(len(planning_export[1]['study_plans']), 2)
         self.assertEqual(len(learning_export[1]['course_ratings']), 2)

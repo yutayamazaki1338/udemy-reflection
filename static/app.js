@@ -1,5 +1,6 @@
 let state, courseId = null, lectureId = null, planDate = '', selectedDate = '';
 let curriculumPreview = null, curriculumLoading = false;
+let chatData = null, chatSessionDate = '', chatSessionId = null, chatBusy = false;
 const selectedPlanLectureIds = new Set();
 let selectedPlanCourseId = null;
 const AI_REFLECTION_DAYS = 14;
@@ -36,6 +37,10 @@ function dateLabel(date) {
  return new Date(`${date}T00:00:00`).toLocaleDateString('ja-JP', {year: 'numeric', month: 'long', day: 'numeric'});
 }
 async function refresh() {
+ if (document.body.dataset.page === 'chat') {
+  await loadAiChat();
+  return;
+ }
  state = await api('/api/state');
  if (courseId === null && state.courses.length) courseId = state.courses[0].id;
  if (!planDate) planDate = today();
@@ -52,7 +57,244 @@ function render() {
   renderPlan();
   return;
  }
+ if (page === 'chat') {
+  renderAiChat();
+  return;
+ }
  renderLearning();
+}
+function initAiChat() {
+ if (!$('#chat-session-date')) return;
+ if (!chatSessionDate) {
+  chatSessionDate = today();
+  $('#chat-session-date').value = chatSessionDate;
+ }
+ if ($('#chat-session-date').dataset.bound) return;
+ $('#chat-session-date').dataset.bound = 'true';
+ $('#chat-session-date').onchange = () => {
+  chatSessionDate = $('#chat-session-date').value || today();
+  chatSessionId = null;
+  loadAiChat();
+ };
+ $('#chat-session-select').onchange = () => {
+  chatSessionId = $('#chat-session-select').value ? Number($('#chat-session-select').value) : null;
+  loadAiChat();
+ };
+ $('#new-chat').onclick = async () => {
+  $('#new-chat').disabled = true;
+  try {
+   const created = await api('/api/ai-chat/session', {session_date: chatSessionDate});
+   chatSessionDate = created.session_date;
+   chatSessionId = created.session_id;
+   await loadAiChat();
+  } catch (error) {
+   renderAiChat(error.message);
+  }
+ };
+ $('#chat-speech-style').onchange = saveAiChatSettings;
+ $('#save-chat-settings').onclick = saveAiChatSettings;
+ $('#chat-form').onsubmit = event => {
+  event.preventDefault();
+  sendAiChatMessage($('#chat-input').value);
+ };
+ $('#chat-input').oninput = () => {
+  $('#chat-send').disabled = chatBusy || !chatSessionId || !chatData?.consented ||
+   !chatData?.api_key_configured || chatData.daily_usage >= chatData.daily_limit ||
+   !$('#chat-input').value.trim();
+ };
+ $('#chat-input').onkeydown = event => {
+  if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+   event.preventDefault();
+   $('#chat-form').requestSubmit();
+  }
+ };
+}
+async function loadAiChat(error = '') {
+ initAiChat();
+ if (!chatSessionDate) return;
+ try {
+  const query = new URLSearchParams({date: chatSessionDate});
+  if (chatSessionId !== null) query.set('session_id', String(chatSessionId));
+  chatData = await api('/api/ai-chat?' + query.toString());
+  chatSessionDate = chatData.session_date;
+  if (chatData.selected_session) chatSessionId = chatData.selected_session.id;
+  else if (chatSessionId !== null) chatSessionId = null;
+  renderAiChat(error);
+ } catch (loadError) {
+  renderAiChat(error || loadError.message);
+ }
+}
+function renderAiChat(error = '') {
+ if (!chatData) {
+  $('#chat-connection').textContent = error ? `状態を読み込めませんでした: ${error}` : '保存済みのローカル履歴を読み込んでいます。';
+  $('#chat-connection').className = 'chat-connection error';
+  return;
+ }
+ const date = $('#chat-session-date');
+ date.value = chatSessionDate;
+ date.disabled = chatBusy;
+ const sessions = $('#chat-session-select');
+ sessions.replaceChildren(el('option', 'チャットを選択してください'));
+ sessions.firstElementChild.value = '';
+ chatData.sessions.forEach(session => {
+  const option = el('option', `${session.title} · ${session.message_count}件`);
+  option.value = session.id;
+  sessions.append(option);
+ });
+ sessions.value = chatSessionId === null ? '' : String(chatSessionId);
+ sessions.disabled = chatBusy || chatData.sessions.length === 0;
+ $('#new-chat').disabled = chatBusy;
+ $('#chat-speech-style').value = chatData.speech_style;
+ $('#chat-speech-style').disabled = chatBusy;
+ $('#chat-daily-limit').value = chatData.daily_limit;
+ $('#chat-daily-limit').disabled = chatBusy;
+ $('#save-chat-settings').disabled = chatBusy;
+ const keyStatus = {
+  local_file: 'APIキー: ローカル設定に保存済み',
+  environment: 'APIキー: サーバー環境変数に設定済み',
+  none: 'APIキー: 未設定',
+  error: 'APIキー: 設定に問題があります',
+ };
+ $('#chat-key-status').textContent = keyStatus[chatData.api_key_source] || keyStatus.error;
+ const ready = chatData.consented && chatData.api_key_configured;
+ $('#chat-connection').textContent = error
+  ? `送信状態: ${error}`
+  : ready
+   ? `接続状態: 利用可能 · ${chatData.model} · 話し方: ${chatData.speech_style_label}`
+   : `接続状態: ${chatData.consented ? 'APIキー未設定' : 'OpenAI送信への同意が必要'} · ローカル履歴は閲覧できます`;
+ $('#chat-connection').className = error ? 'chat-connection error' : 'chat-connection';
+ $('#chat-usage').textContent =
+  `本日の利用枠（日本時間）: ${chatData.daily_usage}/${chatData.daily_limit}回 · トークン集計: 入力 ${chatData.daily_input_tokens} / 出力 ${chatData.daily_output_tokens} · 料金見積もりは表示しません`;
+ renderAiChatConsent();
+ renderAiChatMessages();
+ const form = $('#chat-form');
+ const textarea = $('#chat-input');
+ textarea.disabled = chatBusy || !chatSessionId || !ready || chatData.daily_usage >= chatData.daily_limit;
+ $('#chat-send').disabled = textarea.disabled || !textarea.value.trim();
+}
+function renderAiChatConsent() {
+ const container = $('#chat-consent');
+ container.replaceChildren();
+ if (chatData.consented) {
+  container.append(el('p', '送信同意済み: 入力したチャット本文と、回答に必要な直近の会話履歴がOpenAIへ送信されます。'));
+  const revoke = el('button', '送信同意を取り消す', 'secondary');
+  revoke.type = 'button';
+  revoke.disabled = chatBusy;
+  revoke.onclick = async () => {
+   if (!window.confirm('チャット内容のOpenAI送信への同意を取り消しますか。保存済みのローカル履歴は削除されません。')) return;
+   try {
+    await api('/api/ai-chat/consent', {consent: false});
+    await loadAiChat();
+   } catch (error) {
+    renderAiChat(error.message);
+   }
+  };
+  container.append(revoke);
+  return;
+ }
+ container.append(
+  el('strong', '送信前の確認'),
+  el('p', '送信したメッセージ本文と、回答に必要な直近の会話履歴がOpenAIに送られます。チャット履歴はこのアプリのSQLiteにも保存されます。利用料金が発生する場合があります。')
+ );
+ const label = el('label', undefined, 'chat-consent-check');
+ const checkbox = el('input');
+ checkbox.type = 'checkbox';
+ checkbox.checked = false;
+ checkbox.disabled = chatBusy;
+ label.append(checkbox, el('span', 'チャット本文がOpenAIへ送信されることに同意します。'));
+ const consent = el('button', '内容の送信に同意する');
+ consent.type = 'button';
+ consent.disabled = true;
+ consent.onclick = async () => {
+  consent.disabled = true;
+  try {
+   await api('/api/ai-chat/consent', {consent: true});
+   await loadAiChat();
+  } catch (error) {
+   renderAiChat(error.message);
+  }
+ };
+ checkbox.onchange = () => { consent.disabled = !checkbox.checked || chatBusy; };
+ container.append(label, consent);
+}
+function renderAiChatMessages() {
+ const container = $('#chat-messages');
+ container.replaceChildren();
+ const messages = chatData.messages || [];
+ if (!chatSessionId) {
+  container.append(el('p', 'New chatで、この学習日のチャットを開始してください。過去のチャットは日付から選択できます。', 'muted'));
+  return;
+ }
+ if (!messages.length) {
+  container.append(el('p', 'このチャットにはまだ発言がありません。自動の挨拶や初回API呼び出しはありません。', 'muted'));
+  return;
+ }
+ messages.forEach(message => {
+  const item = el('article', undefined, `chat-message ${message.role === 'user' ? 'user-message' : 'assistant-message'}`);
+  if (message.role === 'assistant') {
+   const avatar = el('img');
+   avatar.src = '/assistant-portrait.png';
+   avatar.alt = '';
+   avatar.className = 'chat-message-avatar';
+   item.append(avatar);
+  }
+  const body = el('div', undefined, 'chat-message-body');
+  const who = message.role === 'user' ? 'あなた' : 'MetaWatch Assistant（AI）';
+  body.append(el('small', `${who} · ${new Date(message.created_at).toLocaleString('ja-JP')}`, 'chat-message-meta'));
+  body.append(el('p', message.content, 'chat-message-content'));
+  if (message.role === 'assistant') {
+   const details = [
+    message.model,
+    message.speech_style ? `話し方: ${{polite: '丁寧', natural: '自然体', friendly: 'フレンドリー'}[message.speech_style] || message.speech_style}` : '',
+    message.input_tokens === null ? '' : `入力 ${message.input_tokens} tokens`,
+    message.output_tokens === null ? '' : `出力 ${message.output_tokens} tokens`,
+   ].filter(Boolean).join(' · ');
+   if (details) body.append(el('small', details, 'chat-message-meta'));
+  }
+  if (message.role === 'user' && message.request_status === 'failed') {
+   body.append(el('p', `送信失敗: ${message.request_error || 'APIエラー'} 発言はローカルに保存されています。`, 'chat-failed-notice'));
+   const retry = el('button', '同じ内容を再送信（利用枠を1回消費）', 'secondary');
+   retry.type = 'button';
+   retry.disabled = chatBusy || !chatData.consented || !chatData.api_key_configured || chatData.daily_usage >= chatData.daily_limit;
+   retry.onclick = () => sendAiChatMessage(message.content);
+   body.append(retry);
+  } else if (message.role === 'user' && message.request_status === 'generating') {
+   body.append(el('p', '応答を処理中です。5分以上完了しない場合は処理が中断された可能性があります。', 'chat-failed-notice'));
+  }
+  item.append(body);
+  container.append(item);
+ });
+ container.scrollTop = container.scrollHeight;
+}
+async function saveAiChatSettings() {
+ const style = $('#chat-speech-style').value;
+ const dailyLimit = Number($('#chat-daily-limit').value);
+ $('#save-chat-settings').disabled = true;
+ try {
+  await api('/api/ai-chat/settings', {speech_style: style, daily_limit: dailyLimit});
+  await loadAiChat('設定を保存しました。');
+ } catch (error) {
+  renderAiChat(error.message);
+ } finally {
+  $('#save-chat-settings').disabled = false;
+ }
+}
+async function sendAiChatMessage(content) {
+ if (chatBusy || !chatSessionId || !content.trim()) return;
+ chatBusy = true;
+ let sendError = '';
+ renderAiChat();
+ try {
+  await api('/api/ai-chat/send', {session_id: chatSessionId, content});
+  $('#chat-input').value = '';
+  await loadAiChat();
+ } catch (error) {
+  sendError = error.message;
+  await loadAiChat(error.message);
+ } finally {
+  chatBusy = false;
+  renderAiChat(sendError);
+ }
 }
 function renderLearning() {
  const courses = $('#courses');
