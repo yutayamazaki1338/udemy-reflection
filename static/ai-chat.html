@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ja">
+<head>
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <title>AIチャット · MetaWatch（メタウォッチ）</title>
+ <meta name="description" content="学びについて対話するMetaWatch Assistant">
+ <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+ <link rel="stylesheet" href="/style.css">
+</head>
+<body data-page="chat">
+ <header class="site-header">
+  <div class="site-identity">
+   <a class="brand" href="/" aria-label="MetaWatch メインページ"><img class="brand-mark" src="/brand-mark.svg" alt=""><img class="brand-wordmark" src="/brand-wordmark.svg" alt="MetaWatch"></a>
+   <h1>AIチャット</h1>
+   <p>学びについて、落ち着いて考えを整理する対話ページ</p>
+  </div>
+  <nav aria-label="メインナビゲーション">
+   <a href="/">メインページ</a><a href="/planning">学習計画</a><a href="/learning">講座の学習記録</a><a class="active" aria-current="page" href="/ai-chat">AIチャット</a>
+  </nav>
+ </header>
+ <div id="message" role="status" aria-live="polite"></div>
+ <main class="chat-page">
+  <aside class="chat-profile card" aria-label="AIアシスタントとチャット設定">
+   <img class="chat-profile-image" src="/assistant-portrait.png" alt="MetaWatch Assistantのプロフィール画像">
+   <h2>MetaWatch Assistant</h2>
+   <p>学んだことや疑問を、対話しながら一緒に整理します。私はAIアシスタントです。</p>
+   <label for="chat-speech-style">現在の話し方
+    <select id="chat-speech-style">
+     <option value="natural">自然体</option><option value="polite">丁寧</option><option value="friendly">フレンドリー</option>
+    </select>
+   </label>
+   <section class="chat-admin-settings" aria-labelledby="chat-limit-title">
+    <h3 id="chat-limit-title">利用上限（管理用設定）</h3>
+    <label for="chat-daily-limit">1日のAIリクエスト上限
+     <input id="chat-daily-limit" type="number" min="1" max="500" step="1">
+    </label>
+    <button id="save-chat-settings" type="button">設定を保存</button>
+   </section>
+   <p id="chat-key-status" class="muted"></p>
+   <a class="download" href="/#ai-reflection">メインページでAPIキーを設定</a>
+   <div class="chat-downloads">
+    <a class="download" href="/api/export/ai-chat.csv">チャット履歴をCSV保存</a>
+    <a class="download" href="/api/export.json">全データをJSON保存</a>
+   </div>
+  </aside>
+  <section class="chat-workspace card" aria-label="チャット">
+   <div class="chat-toolbar">
+    <label>学習日
+     <input id="chat-session-date" type="date">
+    </label>
+    <label>チャット履歴
+     <select id="chat-session-select"><option value="">日付を選び、チャットを開始してください</option></select>
+    </label>
+    <button id="new-chat" type="button">New chat</button>
+   </div>
+   <p id="chat-connection" class="chat-connection" role="status"></p>
+   <p id="chat-usage" class="chat-usage"></p>
+   <section id="chat-consent" class="chat-consent" aria-label="OpenAIへの送信同意"></section>
+   <div id="chat-messages" class="chat-messages" role="log" aria-live="polite" aria-relevant="additions text">
+    <p class="muted">新しいチャットを開始するか、過去の日付から保存済みの会話を選択してください。</p>
+   </div>
+   <form id="chat-form" class="chat-composer">
+    <label for="chat-input">メッセージ</label>
+    <textarea id="chat-input" name="content" rows="3" maxlength="4000" placeholder="学んだことや、考えたいことを書いてください。" required></textarea>
+    <div class="chat-compose-actions">
+     <span class="muted">最大4000文字 · Enterで改行 / ⌘またはCtrl+Enterで送信</span>
+     <button id="chat-send" type="submit">送信</button>
+    </div>
+   </form>
+  </section>
+ </main>
+ <script src="/app.js"></script>
+</body>
+</html>
