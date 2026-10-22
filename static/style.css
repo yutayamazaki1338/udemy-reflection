@@ -65,6 +65,7 @@ main.single-page{display:block;max-width:980px;margin:0 auto}.planning-page{grid
 .plan-selection-controls .secondary{background:#eef3ed;color:#254c3e}
 .plan-table-scroll{overflow-x:auto;margin:12px 0 16px}
 #plan-lecture-table{width:100%;border-collapse:collapse;min-width:620px}
+#plan-course-select{max-width:640px}
 #plan-lecture-table th,#plan-lecture-table td{padding:10px 12px;border-bottom:1px solid #dde5dc;text-align:left;vertical-align:middle}
 #plan-lecture-table th{background:#f4f7f1;color:#405a3d;font-size:12px;white-space:nowrap}
 #plan-lecture-table td:first-child,#plan-lecture-table th:first-child{text-align:center;width:58px}
@@ -76,4 +77,4 @@ main.single-page{display:block;max-width:980px;margin:0 auto}.planning-page{grid
 #plan-add-selected{margin-bottom:12px}
 #plan-manual-entry{border-top:1px solid #dde5dc;padding-top:10px}
 .plan-item{display:flex;align-items:center;justify-content:space-between;gap:10px}
-@media(max-width:680px){#plan-lecture-table{min-width:600px}.plan-item{align-items:flex-start;flex-direction:column;gap:6px}}
+@media(max-width:680px){#plan-lecture-table{min-width:600px}#plan-course-select{max-width:none}.plan-item{align-items:flex-start;flex-direction:column;gap:6px}}

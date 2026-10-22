@@ -345,6 +345,34 @@ def snapshot():
         return {name: [dict(r) for r in c.execute('SELECT * FROM ' + name + ' ORDER BY id')] for name in ('courses', 'course_sections', 'lectures', 'reflections', 'course_ratings', 'study_plans', 'daily_reflections', 'course_archives')}
 
 
+def planning_progress(data):
+    planned_by_date = {}
+    for plan in data['study_plans']:
+        planned_by_date.setdefault(plan['plan_date'], set()).add(plan['lecture_id'])
+    planned_lecture_ids = set().union(*planned_by_date.values()) if planned_by_date else set()
+    reflected_by_date = {}
+    tokyo_timezone = timezone(timedelta(hours=9))
+    for reflection in data['reflections']:
+        if reflection['lecture_id'] not in planned_lecture_ids:
+            continue
+        day = parse_recorded_at(reflection['recorded_at']).astimezone(tokyo_timezone).date().isoformat()
+        reflected_by_date.setdefault(day, set()).add(reflection['lecture_id'])
+    dates = set(planned_by_date)
+    dates.update(reflection['reflection_date'] for reflection in data['daily_reflections'])
+    progress = {}
+    for day in dates:
+        planned = planned_by_date.get(day, set())
+        completed = planned & reflected_by_date.get(day, set())
+        planned_count = len(planned)
+        completed_count = len(completed)
+        progress[day] = {
+            'planned_count': planned_count,
+            'reflected_count': completed_count,
+            'percentage': ((completed_count * 200 + planned_count) // (2 * planned_count)) if planned_count else None,
+        }
+    return progress
+
+
 def tokyo_today():
     return datetime.now(timezone(timedelta(hours=9))).date()
 
@@ -1024,7 +1052,9 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, TypeError) as error:
                 return self.reply(400, {'error': str(error)})
         if path == '/api/state':
-            return self.reply(200, snapshot())
+            data = snapshot()
+            data['planning_progress'] = planning_progress(data)
+            return self.reply(200, data)
         if path == '/api/export.json':
             return self.reply(200, snapshot(), filename='reflection.json')
         if path == '/api/export/planning.json':

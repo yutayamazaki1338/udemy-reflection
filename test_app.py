@@ -455,6 +455,7 @@ class ApiFeatureTests(unittest.TestCase):
         state = self.request_json('/api/state')[1]
         self.assertEqual(len([plan for plan in state['study_plans'] if plan['plan_date'] == day]), 2)
         self.assertEqual(next(lecture for lecture in state['lectures'] if lecture['id'] == 2)['watched'], 1)
+        self.assertEqual(state['planning_progress'][day], {'planned_count': 2, 'reflected_count': 0, 'percentage': 0})
 
         for lecture_ids in ([2, 3], [3, 3], [3, 999], [True]):
             with self.subTest(lecture_ids=lecture_ids):
@@ -471,11 +472,64 @@ class ApiFeatureTests(unittest.TestCase):
         with urlopen(self.base_url + '/app.js') as response:
             script = response.read().decode('utf-8')
         self.assertIn('id="plan-lecture-table"', page)
+        self.assertIn('id="plan-course-select"', page)
         self.assertIn('id="plan-select-all"', page)
         self.assertIn('id="plan-add-selected"', page)
         self.assertIn('視聴済みの単元も復習用に選択できます', page)
+        self.assertIn('講座を選択すると、その講座の単元が表示されます。', script)
+        self.assertIn('courseLectures.forEach(lecture => {', script)
         self.assertIn('lecture_ids: lectureIds', script)
         self.assertIn("lecture.watched ? '視聴済み' : '未視聴'", script)
+
+    def test_planning_progress_uses_distinct_reflections_on_tokyo_calendar_day(self):
+        self.assertEqual(self.request_json('/api/courses', {'name': '達成率講座'})[0], 200)
+        for title in ('単元1', '単元2', '単元3'):
+            self.assertEqual(self.request_json('/api/lectures', {'course_id': 1, 'title': title})[0], 200)
+        day = '2026-10-21'
+        self.assertEqual(self.request_json('/api/plans', {
+            'plan_date': day,
+            'lecture_ids': [1, 2, 3],
+        })[0], 200)
+        reflection = {
+            'lecture_id': 1,
+            'understood': '理解した',
+            'unclear': '',
+            'satisfaction': 4,
+            'reason': '理由',
+            'understanding': 4,
+            'recorded_at': '2026-10-21T14:59:59Z',
+            'notes': '',
+        }
+        self.assertEqual(self.request_json('/api/reflections', reflection)[0], 200)
+        reflection['recorded_at'] = '2026-10-21T15:00:00Z'
+        self.assertEqual(self.request_json('/api/reflections', reflection)[0], 200)
+        reflection['lecture_id'] = 2
+        reflection['recorded_at'] = '2026-10-21T23:00:00+09:00'
+        self.assertEqual(self.request_json('/api/reflections', reflection)[0], 200)
+        self.assertEqual(self.request_json('/api/daily-reflections', {
+            'reflection_date': day,
+            'plan_completed': True,
+            'study_minutes': 30,
+            'self_rating': 4,
+            'improvement': '改善点',
+            'tomorrow_plan': '明日の計画',
+            'recorded_at': '2026-10-21T23:30:00+09:00',
+        })[0], 200)
+        self.assertEqual(self.request_json('/api/daily-reflections', {
+            'reflection_date': '2026-10-22',
+            'plan_completed': True,
+            'study_minutes': 0,
+            'self_rating': 3,
+            'improvement': 'なし',
+            'tomorrow_plan': '休む',
+            'recorded_at': '2026-10-22T09:00:00+09:00',
+        })[0], 200)
+
+        state = self.request_json('/api/state')[1]
+        self.assertEqual(state['planning_progress'][day], {'planned_count': 3, 'reflected_count': 2, 'percentage': 67})
+        self.assertEqual(state['planning_progress']['2026-10-22'], {'planned_count': 0, 'reflected_count': 0, 'percentage': None})
+        self.assertEqual(state['daily_reflections'][0]['plan_completed'], 1)
+        self.assertEqual(self.request_json('/api/export/planning.json')[1]['daily_reflections'][0]['plan_completed'], 1)
 
     def test_daily_reflection_completion_is_retained_in_history(self):
         self.assertEqual(self.request_json('/api/courses', {'name': '講座'})[0], 200)
